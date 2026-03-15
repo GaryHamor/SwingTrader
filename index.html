@@ -145,7 +145,15 @@
 
   .reanalyze-overlay{position:fixed;inset:0;background:rgba(0,0,0,.8);z-index:300;display:none;align-items:center;justify-content:center;}
   .reanalyze-overlay.open{display:flex;}
-  .reanalyze-box{background:var(--surface);border:1px solid var(--border2);border-radius:14px;padding:32px 40px;min-width:340px;max-width:94vw;}
+  .reanalyze-box{background:var(--surface);border:1px solid var(--border2);border-radius:14px;padding:28px 32px;min-width:340px;max-width:560px;width:94vw;max-height:88vh;overflow-y:auto;}
+  .reanalyze-box::-webkit-scrollbar{width:4px;} .reanalyze-box::-webkit-scrollbar-track{background:transparent;} .reanalyze-box::-webkit-scrollbar-thumb{background:var(--border2);border-radius:2px;}
+  .reanalyze-method{background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:14px 16px;margin-bottom:20px;font-family:var(--mono);font-size:11px;color:var(--muted);line-height:1.7;}
+  .reanalyze-method-title{color:#c8cad4;font-weight:700;margin-bottom:6px;font-size:11px;letter-spacing:.04em;}
+  .reanalyze-method ul{list-style:none;padding:0;margin:6px 0 0 0;}
+  .reanalyze-method ul li{padding:2px 0 2px 14px;position:relative;}
+  .reanalyze-method ul li::before{content:'◆';position:absolute;left:0;font-size:7px;color:var(--accent);top:4px;}
+  .reanalyze-method ul li strong{color:var(--text);}
+  .reanalyze-method-footer{margin-top:8px;padding-top:8px;border-top:1px solid var(--border);color:var(--muted);font-size:10px;}
   .reanalyze-title{font-family:var(--mono);font-size:14px;font-weight:700;margin-bottom:6px;color:var(--warn);}
   .reanalyze-sub{font-family:var(--mono);font-size:11px;color:var(--muted);margin-bottom:20px;}
   .reanalyze-progress{display:flex;flex-direction:column;gap:10px;}
@@ -510,6 +518,22 @@
   <div class="reanalyze-box">
     <div class="reanalyze-title">&#8635; Reanalyzing All Holdings</div>
     <div class="reanalyze-sub">Fetching 3 weeks of trading data and updating support, resistance, RSI &amp; MACD for each ticker…</div>
+
+    <div class="reanalyze-method">
+      <div class="reanalyze-method-title">What it fetches</div>
+      60 calendar days of OHLC candles from Yahoo Finance (same proxy the price ticker already uses), then uses only the last 21 trading days for calculations.
+      <div class="reanalyze-method-title" style="margin-top:10px;">What it calculates</div>
+      <ul>
+        <li><strong>RSI (14-period)</strong> — computed from the actual daily close sequence using the Wilder smoothing method</li>
+        <li><strong>Support levels</strong> — identified by finding 3-candle swing lows (pivot points where the low is lower than both neighbors), clustered within 1.5% tolerance, then the 3 nearest below current price are selected</li>
+        <li><strong>Resistance levels</strong> — same method but for swing highs above current price</li>
+        <li><strong>MACD bias</strong> — 12/26 EMA crossover normalized to a &minus;1&rarr;+1 scale relative to price</li>
+        <li><strong>Options bias proxy</strong> — compares volume-weighted bull vs bear candles over the last 5 days as a sentiment indicator</li>
+        <li><strong>Volatility</strong> — standard deviation of daily returns</li>
+      </ul>
+      <div class="reanalyze-method-footer">After each ticker completes, the progress bar turns green and shows the live RSI and number of levels found. The signal panel re-renders immediately with the updated indicators.</div>
+    </div>
+
     <div class="reanalyze-progress" id="reanalyze-progress"></div>
     <div style="margin-top:18px;text-align:right;">
       <button class="btn-cancel" id="reanalyze-close-btn" style="display:none;" onclick="document.getElementById('reanalyze-overlay').classList.remove('open');">Close</button>
@@ -1505,25 +1529,27 @@ async function addHolding() {
   if (!STOCKS[sym]) {
     const ov = document.getElementById('analyzing-overlay');
     document.getElementById('analyzing-title').textContent = `Analyzing ${sym}...`;
-    document.getElementById('analyzing-sub').textContent   = 'Running 4-week swing analysis';
+    document.getElementById('analyzing-sub').textContent   = 'Fetching 3 weeks of candle data';
     document.getElementById('analyzing-step').textContent  = '';
     ov.classList.add('open');
     try {
-      const a = await analyzeTickerWithAI(sym);
+      const steps = ['Fetching price history…','Identifying swing levels…','Computing RSI & MACD…','Calibrating model…'];
+      let si = 0;
+      const stepEl = document.getElementById('analyzing-step');
+      const t = setInterval(()=>{ stepEl.textContent = steps[Math.min(si++, steps.length-1)]; }, 800);
+      const a = await analyzeTicker(sym);
+      clearInterval(t);
       STOCKS[sym] = { name:a.name||sym, base:a.currentPrice, open:a.openPrice||a.currentPrice };
       CONFIG[sym] = { support:a.support, resist:a.resist, rsiBase:a.rsiBase, macdBias:a.macdBias, optionsBias:a.optionsBias };
-      prices[sym] = a.currentPrice; rsiValues[sym] = a.rsiBase;
-      // Immediately fetch real price to replace AI estimate
-      try {
-        const live = await fetchPrice(sym);
-        prices[sym] = live.price;
-        STOCKS[sym].open = live.prevClose;
-      } catch(_) { /* keep AI estimate as fallback */ }
+      prices[sym] = a.currentPrice;
+      rsiValues[sym] = a.rsiBase;
+      priceConfirmed.add(sym);
+      fetchFailed.delete(sym);
       ov.classList.remove('open');
-      showBanner(`◈ ${sym} analyzed — ${a.summary||'Analysis complete.'}`, 'buy');
+      showBanner(`◈ ${sym} — RSI ${a.rsiBase}, ${a.support.length} support & ${a.resist.length} resistance levels set`, 'buy');
     } catch(err) {
       ov.classList.remove('open');
-      alert(`Could not analyze ${sym}: ${err.message}. Using default model based on your cost price.`);
+      alert(`Could not analyze ${sym}: ${err.message}. Using default bands from your cost price.`);
       const p = cost;
       STOCKS[sym] = { name:sym, base:p, open:p };
       CONFIG[sym] = { support:[p*.97,p*.94,p*.90], resist:[p*1.03,p*1.06,p*1.10], rsiBase:50, macdBias:0, optionsBias:0 };
@@ -1578,46 +1604,179 @@ function saveEdit() {
 document.getElementById('edit-modal').addEventListener('click', function(e){ if(e.target===this) closeModal(); });
 
 // ═══════════════════════════════════════════════
-// AI ANALYSIS
+// TECHNICAL ANALYSIS ENGINE
+// Fetches 21 days of OHLC candles via Yahoo proxy
+// and computes RSI, support/resistance, MACD bias
 // ═══════════════════════════════════════════════
-async function analyzeTickerWithAI(sym, stepElId='analyzing-step') {
-  const steps=['Fetching 3-week price history...','Identifying support & resistance...','Computing RSI & MACD bias...','Calibrating signal model...'];
-  let si=0;
-  const el = document.getElementById(stepElId);
-  const t  = el ? setInterval(()=>{ el.textContent=steps[Math.min(si++,steps.length-1)]; },900) : null;
 
-  // Dynamic 3-week window
-  const now    = new Date();
-  const endDate   = now.toISOString().slice(0,10);
-  const startDate = new Date(now - 21*24*60*60*1000).toISOString().slice(0,10);
+async function fetchOHLC(sym) {
+  // 60 calendar days gives ~21+ trading days reliably
+  const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(sym)}?interval=1d&range=60d&includePrePost=false`;
+  const proxies = [
+    `https://api.allorigins.win/get?url=${encodeURIComponent(yahooUrl)}`,
+    `https://corsproxy.io/?${encodeURIComponent(yahooUrl)}`
+  ];
+  let lastErr;
+  for (const proxyUrl of proxies) {
+    try {
+      const data   = await fetchViaProxy(proxyUrl);
+      const result = data?.chart?.result?.[0];
+      if (!result) throw new Error('No result');
+      const timestamps = result.timestamp || [];
+      const q = result.indicators?.quote?.[0] || {};
+      if (!q.close || q.close.length < 5) throw new Error('Insufficient data');
 
-  try {
-    const res = await fetch('https://api.anthropic.com/v1/messages',{
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({ model:'claude-sonnet-4-20250514', max_tokens:1000,
-        tools:[{type:'web_search_20250305',name:'web_search'}],
-        messages:[{role:'user',content:`You are a quantitative swing trading analyst. Analyze stock ticker "${sym}" for the 3-week period ${startDate} to ${endDate}. Use real market data via web search. Return ONLY valid JSON, no markdown, no backticks:\n{"name":"company name max 20 chars","currentPrice":number,"openPrice":number,"support":[n,n,n],"resist":[n,n,n],"rsiBase":number,"macdBias":number,"optionsBias":number,"volatility":number,"summary":"one sentence"}\nSupport/resist ordered nearest to furthest from current price.`}]
-      })
-    });
-    if (t) clearInterval(t);
-    if (!res.ok) throw new Error('API '+res.status);
-    const data = await res.json();
-    const text = data.content.map(b=>b.type==='text'?b.text:'').join('');
-    const m    = text.replace(/```json|```/gi,'').match(/\{[\s\S]*\}/);
-    if (!m) throw new Error('No JSON in response');
-    return JSON.parse(m[0]);
-  } catch(e) { if (t) clearInterval(t); throw e; }
+      // Build candle array, filtering nulls
+      const candles = [];
+      for (let i = 0; i < timestamps.length; i++) {
+        if (q.close[i] != null && q.open[i] != null && q.high[i] != null && q.low[i] != null) {
+          candles.push({ t: timestamps[i], o: q.open[i], h: q.high[i], l: q.low[i], c: q.close[i] });
+        }
+      }
+      if (candles.length < 5) throw new Error('Too few valid candles');
+      return { candles, meta: result.meta };
+    } catch(e) { lastErr = e; }
+  }
+  throw lastErr ?? new Error('OHLC fetch failed');
+}
+
+function calcEMA(closes, period) {
+  const k = 2 / (period + 1);
+  let ema = closes.slice(0, period).reduce((a,b)=>a+b,0) / period;
+  for (let i = period; i < closes.length; i++) ema = closes[i] * k + ema * (1 - k);
+  return ema;
+}
+
+function calcRSI(closes, period=14) {
+  if (closes.length < period + 1) return 50;
+  let gains = 0, losses = 0;
+  for (let i = 1; i <= period; i++) {
+    const d = closes[i] - closes[i-1];
+    if (d > 0) gains += d; else losses += Math.abs(d);
+  }
+  let avgGain = gains / period, avgLoss = losses / period;
+  for (let i = period + 1; i < closes.length; i++) {
+    const d = closes[i] - closes[i-1];
+    avgGain = (avgGain * (period-1) + Math.max(d, 0)) / period;
+    avgLoss = (avgLoss * (period-1) + Math.max(-d,0)) / period;
+  }
+  if (avgLoss === 0) return 100;
+  return 100 - (100 / (1 + avgGain / avgLoss));
+}
+
+function calcMACD(closes) {
+  if (closes.length < 26) return 0;
+  const ema12 = calcEMA(closes, 12);
+  const ema26 = calcEMA(closes, 26);
+  const macdLine = ema12 - ema26;
+  // Normalize to a -1..+1 bias relative to current price
+  const price = closes[closes.length - 1];
+  return Math.max(-1, Math.min(1, macdLine / (price * 0.02)));
+}
+
+function findSwingLevels(candles) {
+  // Find swing highs and lows using a 3-candle pivot method
+  const highs = [], lows = [];
+  for (let i = 1; i < candles.length - 1; i++) {
+    if (candles[i].h > candles[i-1].h && candles[i].h > candles[i+1].h) highs.push(candles[i].h);
+    if (candles[i].l < candles[i-1].l && candles[i].l < candles[i+1].l) lows.push(candles[i].l);
+  }
+  // Also include range extremes
+  highs.push(Math.max(...candles.map(c=>c.h)));
+  lows.push(Math.min(...candles.map(c=>c.l)));
+  return { highs, lows };
+}
+
+function clusterLevels(levels, currentPrice, tolerance=0.015) {
+  // Cluster nearby levels, then pick 3 nearest to current price
+  const clusters = [];
+  const sorted = [...levels].sort((a,b)=>a-b);
+  for (const lvl of sorted) {
+    const existing = clusters.find(c => Math.abs(c - lvl) / lvl < tolerance);
+    if (existing === undefined) clusters.push(lvl);
+    else {
+      const idx = clusters.indexOf(existing);
+      clusters[idx] = (existing + lvl) / 2; // average into cluster
+    }
+  }
+  return clusters
+    .sort((a,b) => Math.abs(a - currentPrice) - Math.abs(b - currentPrice))
+    .slice(0, 3)
+    .sort((a,b) => a - b);
+}
+
+async function analyzeTicker(sym) {
+  const { candles, meta } = await fetchOHLC(sym);
+
+  // Use last 21 trading days (3 weeks) if we have more
+  const recent = candles.slice(-21);
+  const closes = recent.map(c => c.c);
+  const currentPrice = closes[closes.length - 1];
+  const prevClose    = closes[closes.length - 2] || currentPrice;
+
+  // RSI (14-period on available closes)
+  const rsiBase = parseFloat(calcRSI(closes).toFixed(1));
+
+  // MACD bias
+  const macdBias = parseFloat(calcMACD(closes).toFixed(3));
+
+  // Support levels — from swing lows below current price
+  const { highs, lows } = findSwingLevels(recent);
+  const supportCandidates = lows.filter(l => l < currentPrice * 1.01);
+  const resistCandidates  = highs.filter(h => h > currentPrice * 0.99);
+
+  // Fall back to % bands if not enough pivots
+  const support = supportCandidates.length >= 2
+    ? clusterLevels(supportCandidates, currentPrice)
+    : [currentPrice * 0.97, currentPrice * 0.94, currentPrice * 0.90].map(v => parseFloat(v.toFixed(2)));
+  const resist = resistCandidates.length >= 2
+    ? clusterLevels(resistCandidates, currentPrice)
+    : [currentPrice * 1.03, currentPrice * 1.06, currentPrice * 1.10].map(v => parseFloat(v.toFixed(2)));
+
+  // Ensure exactly 3 levels each
+  while (support.length < 3) support.push(parseFloat((support[support.length-1] * 0.97).toFixed(2)));
+  while (resist.length  < 3) resist.push(parseFloat((resist[resist.length-1]   * 1.03).toFixed(2)));
+
+  // Volume-based options bias proxy: above-avg volume on up days = bullish
+  const volumes = recent.map(c => c.v || 0).filter(v => v > 0);
+  let optionsBias = 0;
+  if (volumes.length > 3) {
+    const avgVol = volumes.reduce((a,b)=>a+b,0) / volumes.length;
+    const lastFive = recent.slice(-5);
+    const bullVol = lastFive.filter(c => c.c > c.o).reduce((a,c)=>a+(c.v||0),0);
+    const bearVol = lastFive.filter(c => c.c < c.o).reduce((a,c)=>a+(c.v||0),0);
+    optionsBias = parseFloat(((bullVol - bearVol) / (avgVol * 5)).toFixed(3));
+    optionsBias = Math.max(-1, Math.min(1, optionsBias));
+  }
+
+  // Volatility (std dev of daily returns)
+  const returns = closes.slice(1).map((c,i) => (c - closes[i]) / closes[i]);
+  const meanRet = returns.reduce((a,b)=>a+b,0) / returns.length;
+  const volatility = parseFloat(Math.sqrt(returns.reduce((a,r)=>a+Math.pow(r-meanRet,2),0)/returns.length).toFixed(4));
+
+  const name = (STOCKS[sym] && STOCKS[sym].name) || meta.shortName || meta.symbol || sym;
+
+  return {
+    name,
+    currentPrice: parseFloat(currentPrice.toFixed(2)),
+    openPrice:    parseFloat(prevClose.toFixed(2)),
+    support:      support.map(v => parseFloat(v.toFixed(2))),
+    resist:       resist.map(v => parseFloat(v.toFixed(2))),
+    rsiBase,
+    macdBias,
+    optionsBias,
+    volatility,
+    summary: 'RSI ' + rsiBase.toFixed(0) + ', ' + (rsiBase < 40 ? 'oversold' : (rsiBase > 60 ? 'overbought' : 'neutral')) + ', ' + support.length + ' support levels identified'
+  };
 }
 
 async function reanalyzeAll() {
   const syms = portfolioSymbols();
   if (syms.length === 0) { showBanner('No holdings to reanalyze.', 'sell'); return; }
 
-  // Disable button while running
   const btn = document.getElementById('reanalyze-btn');
   btn.disabled = true;
 
-  // Build progress UI
   const progressEl = document.getElementById('reanalyze-progress');
   progressEl.innerHTML = syms.map(sym => `
     <div class="reanalyze-item" id="ritem-${sym}">
@@ -1635,44 +1794,39 @@ async function reanalyzeAll() {
     const fillEl   = document.getElementById(`rfill-${sym}`);
     const statusEl = document.getElementById(`rstatus-${sym}`);
 
-    fillEl.className   = 'reanalyze-item-fill running';
+    fillEl.className  = 'reanalyze-item-fill running';
     fillEl.style.width = '60%';
-    statusEl.textContent  = 'analyzing…';
+    statusEl.textContent = 'fetching candles…';
     statusEl.className = 'reanalyze-item-status running';
 
     try {
-      const a = await analyzeTickerWithAI(sym);
+      const a = await analyzeTicker(sym);
 
-      // Update CONFIG with fresh indicators
-      CONFIG[sym] = {
-        support:      a.support,
-        resist:       a.resist,
-        rsiBase:      a.rsiBase,
-        macdBias:     a.macdBias,
-        optionsBias:  a.optionsBias
-      };
-      // Nudge RSI toward new base (don't hard-reset to avoid jitter)
-      if (rsiValues[sym] !== undefined) {
-        rsiValues[sym] = rsiValues[sym] * 0.4 + a.rsiBase * 0.6;
-      } else {
-        rsiValues[sym] = a.rsiBase;
-      }
-      // Update stock name if AI returned a better one
-      if (STOCKS[sym]) STOCKS[sym].name = a.name || STOCKS[sym].name;
+      CONFIG[sym] = { support: a.support, resist: a.resist, rsiBase: a.rsiBase, macdBias: a.macdBias, optionsBias: a.optionsBias };
 
-      fillEl.className   = 'reanalyze-item-fill done';
-      statusEl.textContent  = `✓ ${a.summary ? a.summary.slice(0,28)+'…' : 'updated'}`;
+      // Blend RSI — don't hard-reset
+      rsiValues[sym] = rsiValues[sym] !== undefined
+        ? rsiValues[sym] * 0.4 + a.rsiBase * 0.6
+        : a.rsiBase;
+
+      // Update live price and open
+      prices[sym] = a.currentPrice;
+      if (STOCKS[sym]) { STOCKS[sym].open = a.openPrice; STOCKS[sym].name = a.name; }
+      priceConfirmed.add(sym);
+      fetchFailed.delete(sym);
+
+      fillEl.className  = 'reanalyze-item-fill done';
+      statusEl.textContent = `✓ RSI ${a.rsiBase} · ${a.support.length} sup · ${a.resist.length} res`;
       statusEl.className = 'reanalyze-item-status done';
       successCount++;
     } catch(err) {
-      fillEl.className   = 'reanalyze-item-fill error';
-      statusEl.textContent  = `✗ ${err.message.slice(0,24)}`;
+      fillEl.className  = 'reanalyze-item-fill error';
+      statusEl.textContent = `✗ ${err.message.slice(0,28)}`;
       statusEl.className = 'reanalyze-item-status error';
       errorCount++;
     }
   }
 
-  // Re-render panels with updated indicators
   renderSignalPanel();
   renderPortfolio();
   if (acctPanelOpen) renderAccountPanel();
@@ -1681,7 +1835,7 @@ async function reanalyzeAll() {
   btn.disabled = false;
 
   const msg = successCount === syms.length
-    ? `✓ Reanalysis complete — all ${successCount} ticker${successCount!==1?'s':''} updated`
+    ? `✓ Reanalysis complete — all ${successCount} ticker${successCount!==1?'s':''} updated from live candle data`
     : `⚠ Reanalysis done — ${successCount} updated, ${errorCount} failed`;
   showBanner(msg, successCount > 0 ? 'buy' : 'sell');
 }
