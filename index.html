@@ -28,6 +28,7 @@
     --buy:#00e5a0; --buy-dim:rgba(0,229,160,0.12);
     --sell:#ff4d6d; --sell-dim:rgba(255,77,109,0.12);
     --warn:#ffb700; --accent:#5b8cff;
+    --stale:#4da6ff;
     --mono:'Space Mono',monospace; --sans:'DM Sans',sans-serif;
   }
   *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
@@ -142,6 +143,10 @@
   .btn-io.reanalyze-btn{border-color:rgba(255,183,0,.4);color:var(--warn);}
   .btn-io.reanalyze-btn:hover{border-color:var(--warn);color:var(--warn);background:rgba(255,183,0,.07);}
   .btn-io.reanalyze-btn:disabled{opacity:.4;cursor:not-allowed;}
+  .btn-io.apikey-btn{border-color:rgba(91,140,255,.4);color:var(--accent);}
+  .btn-io.apikey-btn:hover{border-color:var(--accent);color:var(--accent);background:rgba(91,140,255,.07);}
+  .btn-io.apikey-btn.key-set{border-color:rgba(0,229,160,.4);color:var(--buy);}
+  .btn-io.apikey-btn.key-set:hover{border-color:var(--buy);color:var(--buy);background:rgba(0,229,160,.07);}
 
   .reanalyze-overlay{position:fixed;inset:0;background:rgba(0,0,0,.8);z-index:300;display:none;align-items:center;justify-content:center;}
   .reanalyze-overlay.open{display:flex;}
@@ -329,21 +334,28 @@
     </div>
   </div>
   <div class="header-meta">
-    <input type="text" id="filename-input" class="filename-input" value="SwingTrader">
-    <button class="btn-io save" onclick="saveSession()">&#8595; SAVE</button>
-    <button class="btn-io load" onclick="document.getElementById('file-input').click()">&#8593; LOAD</button>
-    <input type="file" id="file-input" accept=".json" onchange="loadSession(event)" style="display:none;">
-    <button class="btn-io history-btn" id="history-toggle-btn" onclick="toggleHistory()">&#9670; HISTORY</button>
-    <button class="btn-io acct-btn" id="acct-toggle-btn" onclick="toggleAccountPanel()">&#9646; BY ACCOUNT</button>
-    <button class="btn-io reanalyze-btn" id="reanalyze-btn" onclick="reanalyzeAll()" title="Re-run AI analysis on all holdings">&#8635; REANALYZE ALL</button>
-    <div style="display:flex;align-items:center;gap:7px;">
-      <label style="font-family:var(--mono);font-size:11px;color:var(--muted);">INTERVAL</label>
-      <select id="interval-select" class="form-input" style="padding:3px 8px;font-size:11px;height:26px;cursor:pointer;width:80px;" onchange="changeInterval(this.value)"></select>
+    <!-- Row 1: file controls + panel toggles + reanalyze -->
+    <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;width:100%;">
+      <input type="text" id="filename-input" class="filename-input" value="SwingTrader">
+      <button class="btn-io save" onclick="saveSession()">&#8595; SAVE</button>
+      <button class="btn-io load" onclick="document.getElementById('file-input').click()">&#8593; LOAD</button>
+      <input type="file" id="file-input" accept=".json" onchange="loadSession(event)" style="display:none;">
+      <button class="btn-io apikey-btn" id="apikey-btn" onclick="openApiKeyModal()" title="Set Polygon.io API key">&#9881; API KEY</button>
+      <button class="btn-io history-btn" id="history-toggle-btn" onclick="toggleHistory()">&#9670; HISTORY</button>
+      <button class="btn-io acct-btn" id="acct-toggle-btn" onclick="toggleAccountPanel()">&#9646; BY ACCOUNT</button>
+      <button class="btn-io reanalyze-btn" id="reanalyze-btn" onclick="reanalyzeAll()" title="Re-run technical analysis on all holdings">&#8635; REANALYZE ALL</button>
     </div>
-    <div class="clock" id="clock">--:--:-- --</div>
-    <span id="market-status" style="font-family:var(--mono);font-size:10px;border:1px solid;border-radius:4px;padding:3px 8px;letter-spacing:.06em;">MARKET CLOSED</span>
-    <span id="fetch-status" style="font-family:var(--mono);font-size:10px;color:var(--muted);">initializing...</span>
-    <div class="live-dot"><div class="pulse"></div>LIVE</div>
+    <!-- Row 2: live status indicators -->
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;width:100%;">
+      <div style="display:flex;align-items:center;gap:7px;">
+        <label style="font-family:var(--mono);font-size:11px;color:var(--muted);">INTERVAL</label>
+        <select id="interval-select" class="form-input" style="padding:3px 8px;font-size:11px;height:26px;cursor:pointer;width:80px;" onchange="changeInterval(this.value)"></select>
+      </div>
+      <div class="clock" id="clock">--:--:-- --</div>
+      <span id="market-status" style="font-family:var(--mono);font-size:10px;border:1px solid;border-radius:4px;padding:3px 8px;letter-spacing:.06em;">MARKET CLOSED</span>
+      <span id="fetch-status" style="font-family:var(--mono);font-size:10px;color:var(--muted);">initializing...</span>
+      <div class="live-dot"><div class="pulse"></div>LIVE</div>
+    </div>
   </div>
 </div>
 
@@ -399,6 +411,29 @@
 <div class="history-panel" id="history-panel"></div>
 
 </div><!-- /.app -->
+
+<!-- ── API Key Modal ── -->
+<div class="modal-overlay" id="apikey-modal">
+  <div class="modal">
+    <div class="modal-title">&#9881; Polygon.io API Key</div>
+    <div class="modal-sub">Enter your free Polygon.io API key to enable live price fetching. Get one free at <strong style="color:var(--accent);">polygon.io</strong>. Your key is saved with your session file.</div>
+    <div class="modal-fields">
+      <div>
+        <div class="field-label">API Key</div>
+        <div style="display:flex;gap:8px;align-items:center;">
+          <input class="form-input" id="apikey-input" type="password" style="flex:1;" placeholder="e.g. abcd1234efgh5678..." autocomplete="off" spellcheck="false">
+          <button id="apikey-toggle-vis" onclick="toggleApiKeyVisibility()" style="background:var(--surface2);border:1px solid var(--border);color:var(--muted);border-radius:6px;padding:8px 10px;cursor:pointer;font-size:12px;flex-shrink:0;" title="Show/hide key">&#128065;</button>
+        </div>
+        <div id="apikey-status" style="font-family:var(--mono);font-size:10px;margin-top:6px;"></div>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn-cancel" onclick="closeApiKeyModal()">Cancel</button>
+      <button class="btn-danger" onclick="clearApiKey()" style="display:none;" id="apikey-clear-btn">Clear Key</button>
+      <button class="btn-save" onclick="saveApiKey()">Save Key</button>
+    </div>
+  </div>
+</div>
 
 <!-- ── SOLD / Close Position Modal ── -->
 <div class="modal-overlay" id="sold-modal">
@@ -568,7 +603,8 @@ const CONFIG = {
 
 let prices       = {};
 let rsiValues    = {};
-let fetchFailed  = new Set(); // symbols whose last fetch failed
+let fetchFailed  = new Set(); // symbols whose last fetch failed all retries
+let priceStale   = new Set(); // symbols showing last-known-good price (blue) after retry exhaustion
 let priceConfirmed = new Set(); // symbols that have received at least one live price
 let holdings     = [];        // { symbol, qty, cost, sellPrice }
 let tradeHistory = [];        // closed trade records
@@ -617,92 +653,82 @@ function marketStatusLabel() {
 }
 
 // ═══════════════════════════════════════════════
-// REAL PRICE FETCH
-// Uses Yahoo Finance /v8/finance/quote (real-time quote endpoint)
-// with two CORS proxy fallbacks
+// PRICE FETCH — Polygon.io
+// Free tier: 5 API calls / minute (unlimited outside market hours)
+// Endpoints used:
+//   /v2/last/trade/{sym}          — last trade (market hours)
+//   /v2/aggs/ticker/{sym}/prev    — previous day close + after-hours
 // ═══════════════════════════════════════════════
+let POLYGON_KEY = ''; // set via the ⚙ API KEY button in the header
 
-async function fetchViaProxy(proxyUrl) {
-  const res = await fetch(proxyUrl, { cache: 'no-store' });
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+async function polygonFetch(url) {
+  const res = await fetch(url, { cache: 'no-store' });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  const wrapper = await res.json();
-  const raw = typeof wrapper.contents === 'string' ? wrapper.contents : JSON.stringify(wrapper);
-  return JSON.parse(raw);
+  const data = await res.json();
+  if (data.status === 'ERROR') throw new Error(data.error || 'Polygon error');
+  return data;
 }
 
 async function fetchPrice(sym) {
-  // Yahoo Finance chart endpoint — includes regularMarketPrice, postMarketPrice, preMarketPrice, previousClose
-  const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(sym)}?interval=1d&range=5d&includePrePost=true`;
+  // Strategy:
+  //   Open / pre-market / after-hours → /v2/last/trade for real-time last print
+  //   Closed                          → /v2/aggs/ticker/prev for last session close
+  //   prevClose always comes from /v2/aggs/ticker/prev
+  const mktStatus = getMarketStatus();
 
-  const proxies = [
-    `https://api.allorigins.win/get?url=${encodeURIComponent(yahooUrl)}`,
-    `https://corsproxy.io/?${encodeURIComponent(yahooUrl)}`
-  ];
+  // Always fetch prev-day aggregate for prevClose and after-hours data
+  const aggUrl   = `https://api.polygon.io/v2/aggs/ticker/${encodeURIComponent(sym)}/prev?adjusted=true&apiKey=${POLYGON_KEY}`;
+  // Last trade for real-time price during active sessions
+  const tradeUrl = `https://api.polygon.io/v2/last/trade/${encodeURIComponent(sym)}?apiKey=${POLYGON_KEY}`;
 
+  let price, prevClose;
+
+  if (mktStatus === 'open' || mktStatus === 'premarket' || mktStatus === 'afterhours') {
+    // Fetch both in parallel
+    const [tradeData, aggData] = await Promise.all([
+      polygonFetch(tradeUrl),
+      polygonFetch(aggUrl)
+    ]);
+
+    const lastPrice = tradeData?.results?.p;           // last trade price
+    const aggResult = aggData?.results?.[0];
+    prevClose = aggResult?.c ?? aggResult?.o ?? lastPrice; // close of previous session
+
+    // After-hours: if last trade is newer than today's close, use it
+    price = (lastPrice && lastPrice > 0) ? lastPrice : prevClose;
+  } else {
+    // Closed: just need previous session data
+    const aggData = await polygonFetch(aggUrl);
+    const aggResult = aggData?.results?.[0];
+    if (!aggResult) throw new Error('No aggregate data');
+    // vw = volume-weighted avg (most representative closed price)
+    price     = aggResult.vw ?? aggResult.c;
+    prevClose = aggResult.c;
+  }
+
+  if (!price || price <= 0) throw new Error('Bad price value');
+  return { price: parseFloat(price.toFixed(4)), prevClose: parseFloat((prevClose || price).toFixed(4)) };
+}
+
+async function fetchPriceWithRetry(sym, maxRetries = 5, delayMs = 1000) {
   let lastErr;
-  for (const proxyUrl of proxies) {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
-      const data   = await fetchViaProxy(proxyUrl);
-      const result = data?.chart?.result?.[0];
-      if (!result) throw new Error('No result');
-      const meta = result.meta;
-
-      const mktStatus   = getMarketStatus();
-      const regular     = meta.regularMarketPrice;
-      const postMkt     = meta.postMarketPrice;
-      const preMkt      = meta.preMarketPrice;
-      const prevClose   = meta.previousClose ?? meta.chartPreviousClose ?? regular;
-
-      // Timestamps (seconds since epoch) let us pick the freshest reading
-      const regularTs  = meta.regularMarketTime   || 0;
-      const postMktTs  = meta.postMarketTime       || 0;
-      const preMktTs   = meta.preMarketTime        || 0;
-
-      let price;
-
-      if (mktStatus === 'open') {
-        // Regular session: use live regular price
-        price = regular;
-
-      } else if (mktStatus === 'premarket') {
-        // Pre-market: prefer pre-market if newer than last close
-        price = (preMkt && preMkt > 0 && preMktTs > regularTs) ? preMkt : regular;
-
-      } else if (mktStatus === 'afterhours') {
-        // After-hours: prefer post-market if newer than last close
-        price = (postMkt && postMkt > 0 && postMktTs > regularTs) ? postMkt : regular;
-
-      } else {
-        // Closed (overnight / weekend / holiday):
-        // Use the most recently timestamped price available —
-        // post-market often carries the last AH print right through the closed period
-        const candidates = [];
-        if (regular  && regular  > 0) candidates.push({ p: regular,  t: regularTs  });
-        if (postMkt  && postMkt  > 0) candidates.push({ p: postMkt,  t: postMktTs  });
-        if (preMkt   && preMkt   > 0) candidates.push({ p: preMkt,   t: preMktTs   });
-        if (candidates.length > 0) {
-          candidates.sort((a, b) => b.t - a.t);   // newest first
-          price = candidates[0].p;
-        } else {
-          price = prevClose;
-        }
-      }
-
-      // Last-resort fallback
-      if (!price || price <= 0) price = prevClose;
-      if (!price || price <= 0) throw new Error('Bad price value');
-
-      return { price, prevClose };
+      const result = await fetchPrice(sym);
+      return result; // success
     } catch(e) {
       lastErr = e;
+      if (attempt < maxRetries) await sleep(delayMs);
     }
   }
-  throw lastErr ?? new Error('All proxies failed');
+  throw lastErr ?? new Error('All retries failed');
 }
 
 async function fetchAllPrices() {
   const syms = portfolioSymbols();
-  const results = await Promise.allSettled(syms.map(sym => fetchPrice(sym)));
+  const results = await Promise.allSettled(syms.map(sym => fetchPriceWithRetry(sym)));
   let anyOk = false;
   results.forEach((r, i) => {
     const sym = syms[i];
@@ -710,10 +736,9 @@ async function fetchAllPrices() {
       const { price, prevClose } = r.value;
       prices[sym] = price;
       fetchFailed.delete(sym);
-      priceConfirmed.add(sym);  // live price received — confirmed good
-      // Always update prevClose so % change reflects today
+      priceStale.delete(sym);        // fresh price — no longer stale
+      priceConfirmed.add(sym);
       STOCKS[sym].open = prevClose;
-      // Nudge RSI from price momentum
       if (rsiValues[sym] !== undefined) {
         const pchg = (price - prevClose) / prevClose;
         const nudge = pchg * 80;
@@ -723,16 +748,27 @@ async function fetchAllPrices() {
       }
       anyOk = true;
     } else {
-      fetchFailed.add(sym);  // mark this symbol as failed
+      if (priceConfirmed.has(sym)) {
+        // Had a good price before — mark stale (blue), keep last value
+        priceStale.add(sym);
+        fetchFailed.delete(sym);
+      } else {
+        // Never had a good price — full fetch error
+        fetchFailed.add(sym);
+      }
     }
   });
   return anyOk;
 }
 
-// A symbol should show as failed if its fetch explicitly failed,
-// OR if it has never received a confirmed live price (still on hardcoded base)
+// isFetchBad: show FETCH ERR (no confirmed price ever)
 function isFetchBad(sym) {
   return fetchFailed.has(sym) || !priceConfirmed.has(sym);
+}
+
+// isPriceStale: had a good price, but latest fetch failed — show blue
+function isPriceStale(sym) {
+  return priceStale.has(sym) && priceConfirmed.has(sym);
 }
 
 
@@ -769,7 +805,13 @@ async function tick() {
   if (acctPanelOpen) renderAccountPanel();
 
   if (!ok) {
-    updateFetchStatus('⚠ fetch failed — retrying', 'var(--warn)');
+    const staleSyms = portfolioSymbols().filter(s => isPriceStale(s));
+    const errSyms   = portfolioSymbols().filter(s => isFetchBad(s));
+    if (staleSyms.length > 0) {
+      updateFetchStatus(`⬡ stale: ${staleSyms.join(', ')} — retries exhausted, showing last known price`, 'var(--stale)');
+    } else {
+      updateFetchStatus(`⚠ fetch failed — retrying (${errSyms.join(', ')})`, 'var(--warn)');
+    }
   } else {
     const syms = portfolioSymbols();
     const summary = syms.map(s => `${s} $${prices[s]?.toFixed(2) ?? '—'}`).join(' · ');
@@ -915,6 +957,9 @@ function renderSignalPanel() {
     const chg = p - STOCKS[sym].open;
     const chgPct = (chg/STOCKS[sym].open*100).toFixed(2);
     const chgStr = (chg>=0?'+':'')+'$'+Math.abs(chg).toFixed(2);
+    const stale = isPriceStale(sym);
+    const priceColor = stale ? 'var(--stale)' : (chg>=0 ? 'var(--buy)' : 'var(--sell)');
+    const staleTag   = stale ? `<span class="ind-chip amber" style="font-size:9px;">STALE</span>` : '';
 
     if (prevSignals[sym] !== sig.signal) {
       if (sig.signal==='BUY')  { alertMsg=`▲ BUY SIGNAL — ${sym} at $${p.toFixed(2)} (RSI ${sig.rsi}, ${sig.buy}% confidence)`; alertType='buy'; }
@@ -950,10 +995,11 @@ function renderSignalPanel() {
         <br><button class="btn-hint" onclick="openHintModal('${sym}')">? HINT</button>
       </div>
       <div class="price-block">
-        <div class="price-val" style="color:${chg>=0?'var(--buy)':'var(--sell)'}">$${p.toFixed(2)}</div>
+        <div class="price-val" style="color:${priceColor}">$${p.toFixed(2)}</div>
         <div class="price-chg ${chg>=0?'up':'down'}">${chgStr}&nbsp;(${chg>=0?'+':''}${chgPct}%)</div>
         <div class="indicators-row">
           ${rsiChip}
+          ${staleTag}
           ${nearSup?'<span class="ind-chip green">NEAR SUPP</span>':''}
           ${nearRes?'<span class="ind-chip red">NEAR RES</span>':''}
         </div>
@@ -1010,7 +1056,9 @@ function renderPortfolio() {
 
     const priceCell = failed
       ? `<span style="font-family:var(--mono);font-size:12px;color:var(--warn);">FETCH ERR</span>`
-      : `<span style="font-family:var(--mono);font-size:12px;color:${curr>=h.cost?'var(--buy)':'var(--sell)'}">$${curr.toFixed(2)}</span>`;
+      : isPriceStale(h.symbol)
+        ? `<span style="font-family:var(--mono);font-size:12px;color:var(--stale);" title="Stale — last known price">$${curr.toFixed(2)} ⬡</span>`
+        : `<span style="font-family:var(--mono);font-size:12px;color:${curr>=h.cost?'var(--buy)':'var(--sell)'}">$${curr.toFixed(2)}</span>`;
 
     const mktValCell = failed ? `<span class="h-num" style="color:var(--muted)">—</span>`
       : `<span class="h-num">$${mkt.toFixed(2)}</span>`;
@@ -1608,32 +1656,27 @@ document.getElementById('edit-modal').addEventListener('click', function(e){ if(
 // ═══════════════════════════════════════════════
 
 async function fetchOHLC(sym) {
-  // 60 calendar days gives ~21+ trading days reliably
-  const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(sym)}?interval=1d&range=60d&includePrePost=false`;
-  const proxies = [
-    `https://api.allorigins.win/get?url=${encodeURIComponent(yahooUrl)}`,
-    `https://corsproxy.io/?${encodeURIComponent(yahooUrl)}`
-  ];
-  let lastErr;
-  for (const proxyUrl of proxies) {
-    try {
-      const data   = await fetchViaProxy(proxyUrl);
-      const result = data?.chart?.result?.[0];
-      if (!result) throw new Error('No result');
-      const timestamps = result.timestamp || [];
-      const q = result.indicators?.quote?.[0] || {};
-      if (!q.close || q.close.length < 5) throw new Error('Insufficient data');
+  // Polygon.io aggregates: 60 calendar days of daily OHLCV bars
+  const to   = new Date().toISOString().slice(0, 10);
+  const from = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const url  = `https://api.polygon.io/v2/aggs/ticker/${encodeURIComponent(sym)}/range/1/day/${from}/${to}?adjusted=true&sort=asc&limit=60&apiKey=${POLYGON_KEY}`;
 
-      // Build candle array, filtering nulls
-      const candles = [];
-      for (let i = 0; i < timestamps.length; i++) {
-        if (q.close[i] != null && q.open[i] != null && q.high[i] != null && q.low[i] != null) {
-          candles.push({ t: timestamps[i], o: q.open[i], h: q.high[i], l: q.low[i], c: q.close[i] });
-        }
-      }
-      if (candles.length < 5) throw new Error('Too few valid candles');
-      return { candles, meta: result.meta };
-    } catch(e) { lastErr = e; }
+  let lastErr;
+  for (let attempt = 0; attempt <= 3; attempt++) {
+    try {
+      const data = await polygonFetch(url);
+      if (!data.results || data.results.length < 5) throw new Error('Insufficient candle data');
+
+      const candles = data.results.map(r => ({
+        t: r.t, o: r.o, h: r.h, l: r.l, c: r.c, v: r.v
+      }));
+
+      const meta = { shortName: sym, symbol: sym };
+      return { candles, meta };
+    } catch(e) {
+      lastErr = e;
+      if (attempt < 3) await sleep(1000);
+    }
   }
   throw lastErr ?? new Error('OHLC fetch failed');
 }
@@ -1839,8 +1882,82 @@ async function reanalyzeAll() {
 }
 
 // ═══════════════════════════════════════════════
-// SAVE / LOAD
+// API KEY MODAL
 // ═══════════════════════════════════════════════
+function openApiKeyModal() {
+  const inp = document.getElementById('apikey-input');
+  inp.value = POLYGON_KEY || '';
+  inp.type  = 'password';
+  document.getElementById('apikey-toggle-vis').textContent = '👁';
+  updateApiKeyStatus();
+  document.getElementById('apikey-clear-btn').style.display = POLYGON_KEY ? 'inline-block' : 'none';
+  document.getElementById('apikey-modal').classList.add('open');
+  setTimeout(() => inp.focus(), 100);
+}
+
+function closeApiKeyModal() {
+  document.getElementById('apikey-modal').classList.remove('open');
+}
+
+function toggleApiKeyVisibility() {
+  const inp = document.getElementById('apikey-input');
+  const btn = document.getElementById('apikey-toggle-vis');
+  if (inp.type === 'password') { inp.type = 'text';     btn.textContent = '🙈'; }
+  else                          { inp.type = 'password'; btn.textContent = '👁'; }
+}
+
+function updateApiKeyStatus() {
+  const statusEl = document.getElementById('apikey-status');
+  if (!statusEl) return;
+  if (POLYGON_KEY && POLYGON_KEY.length > 4) {
+    statusEl.textContent = `✓ Key set (…${POLYGON_KEY.slice(-6)})`;
+    statusEl.style.color = 'var(--buy)';
+  } else {
+    statusEl.textContent = 'No key set — price fetching will fail.';
+    statusEl.style.color = 'var(--warn)';
+  }
+}
+
+function updateApiKeyButton() {
+  const btn = document.getElementById('apikey-btn');
+  if (!btn) return;
+  if (POLYGON_KEY && POLYGON_KEY.length > 4) {
+    btn.className = 'btn-io apikey-btn key-set';
+    btn.title     = `API key set (…${POLYGON_KEY.slice(-6)}) — click to update`;
+    btn.innerHTML = '&#9881; API KEY ✓';
+  } else {
+    btn.className = 'btn-io apikey-btn';
+    btn.title     = 'Set Polygon.io API key';
+    btn.innerHTML = '&#9881; API KEY';
+  }
+}
+
+function saveApiKey() {
+  const val = document.getElementById('apikey-input').value.trim();
+  if (!val) { alert('Please enter an API key.'); return; }
+  POLYGON_KEY = val;
+  updateApiKeyButton();
+  updateApiKeyStatus();
+  document.getElementById('apikey-clear-btn').style.display = 'inline-block';
+  closeApiKeyModal();
+  showBanner('✓ Polygon.io API key saved — price fetching enabled', 'buy');
+  // Kick off a fresh fetch with the new key
+  if (tickTimer) clearTimeout(tickTimer);
+  tick();
+}
+
+function clearApiKey() {
+  if (!confirm('Clear the API key? Price fetching will stop until a new key is entered.')) return;
+  POLYGON_KEY = '';
+  document.getElementById('apikey-input').value = '';
+  document.getElementById('apikey-clear-btn').style.display = 'none';
+  updateApiKeyButton();
+  updateApiKeyStatus();
+  showBanner('⚠ API key cleared — price fetching disabled', 'sell');
+}
+
+document.getElementById('apikey-modal').addEventListener('click', function(e){ if(e.target===this) closeApiKeyModal(); });
+document.getElementById('apikey-input').addEventListener('keydown', function(e){ if(e.key==='Enter') saveApiKey(); });
 function saveSession() {
   const syms = portfolioSymbols();
   const snap = { stocks:{}, config:{}, prices:{}, rsi:{} };
@@ -1850,9 +1967,15 @@ function saveSession() {
     if (prices[sym]!==undefined) snap.prices[sym]=prices[sym];
     if (rsiValues[sym]!==undefined) snap.rsi[sym]=rsiValues[sym];
   }
-  const payload = { version:10, savedAt:new Date().toISOString(), holdings, tradeHistory, ...snap };
-  const name    = (document.getElementById('filename-input').value.trim()||'SwingTracker').replace(/[^a-zA-Z0-9_-]/g,'_');
-  const blob    = new Blob([JSON.stringify(payload,null,2)],{type:'application/json'});
+  const payload = {
+    version:10,
+    savedAt: new Date().toISOString(),
+    polygonKey: POLYGON_KEY || '',
+    holdings, tradeHistory,
+    ...snap
+  };
+  const name = (document.getElementById('filename-input').value.trim()||'SwingTrader').replace(/[^a-zA-Z0-9_-]/g,'_');
+  const blob = new Blob([JSON.stringify(payload,null,2)],{type:'application/json'});
   const a = document.createElement('a');
   a.href=URL.createObjectURL(blob); a.download=name+'.json'; a.click(); URL.revokeObjectURL(a.href);
   showBanner(`✓ Saved ${name}.json — ${holdings.length} holding(s), ${tradeHistory.length} history record(s)`,'buy');
@@ -1867,7 +1990,13 @@ function loadSession(ev) {
       if (!data.holdings||!data.stocks||!data.config) throw new Error('Invalid file format');
       holdings=data.holdings; tradeHistory=data.tradeHistory||[];
       fetchFailed.clear();
+      priceStale.clear();
       priceConfirmed.clear();
+      // Restore API key if present in save file
+      if (data.polygonKey && data.polygonKey.trim()) {
+        POLYGON_KEY = data.polygonKey.trim();
+        updateApiKeyButton();
+      }
       for(const s in data.stocks) STOCKS[s]=data.stocks[s];
       for(const s in data.config) CONFIG[s]=data.config[s];
       for(const s in data.prices) prices[s]=data.prices[s];
@@ -1877,8 +2006,8 @@ function loadSession(ev) {
       if(historyOpen) renderHistory();
       if(acctPanelOpen) renderAccountPanel();
       const at=data.savedAt?' (saved '+new Date(data.savedAt).toLocaleString()+')':'';
-      showBanner(`✓ Loaded ${file.name}${at} — ${holdings.length} holding(s), ${tradeHistory.length} history record(s)`,'buy');
-      // Kick off a fresh live price fetch
+      const keyNote = data.polygonKey ? ' · API key restored' : '';
+      showBanner(`✓ Loaded ${file.name}${at} — ${holdings.length} holding(s), ${tradeHistory.length} history record(s)${keyNote}`,'buy');
       if(tickTimer) clearTimeout(tickTimer);
       tick();
     } catch(err){alert('Load failed: '+err.message);}
@@ -1952,6 +2081,7 @@ function closeHintModal() {
 document.getElementById('hint-modal').addEventListener('click', function(e){ if(e.target===this) closeHintModal(); });
 
 initPrices();
+updateApiKeyButton();
 startLoop();
 </script>
 <!-- iOS Install Banner -->
