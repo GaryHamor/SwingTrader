@@ -357,6 +357,7 @@
       <div class="clock" id="clock">--:--:-- --</div>
       <span id="market-status" style="font-family:var(--mono);font-size:10px;border:1px solid;border-radius:4px;padding:3px 8px;letter-spacing:.06em;">MARKET CLOSED</span>
       <span id="fetch-status" style="font-family:var(--mono);font-size:10px;color:var(--muted);">initializing...</span>
+      <span id="autosave-indicator" style="font-family:var(--mono);font-size:10px;color:var(--muted);"></span>
       <div class="live-dot"><div class="pulse"></div>LIVE</div>
     </div>
   </div>
@@ -922,8 +923,26 @@ function startLoop() {
   populateIntervalSelect();
   setInterval(updateClock, 1000);
   updateClock();
-  // Validate API key first; if good, kick off the normal tick loop
-  validateApiKey(() => tick());
+
+  // Auto-load last session from localStorage
+  const restored = autoLoadFromLocalStorage();
+
+  if (restored) {
+    // Render immediately with restored data, then validate key + reanalyze
+    renderSignalPanel();
+    renderPortfolio();
+    if (historyOpen) renderHistory();
+    if (acctPanelOpen) renderAccountPanel();
+
+    if (!POLYGON_KEY || !POLYGON_KEY.trim()) {
+      openApiKeyModal(true); // prompt for key, then reanalyze
+    } else {
+      validateApiKey(() => reanalyzeAll());
+    }
+  } else {
+    // No saved session — just validate key and start normal tick loop
+    validateApiKey(() => tick());
+  }
 }
 
 
@@ -1586,6 +1605,7 @@ function confirmSoldPrice() {
   if (acctPanelOpen) renderAccountPanel();
   renderSignalPanel();
   renderPortfolio();
+  autoSaveToLocalStorage();
 }
 document.getElementById('sold-modal').addEventListener('click', function(e){ if(e.target===this) closeSoldModal(); });
 
@@ -1608,6 +1628,7 @@ function confirmDelete() {
   renderSignalPanel();
   renderPortfolio();
   if (acctPanelOpen) renderAccountPanel();
+  autoSaveToLocalStorage();
 }
 document.getElementById('delete-modal').addEventListener('click', function(e){ if(e.target===this) closeDeleteModal(); });
 
@@ -1678,6 +1699,7 @@ async function addHolding() {
   // Render immediately so the holding appears (may briefly show stale/err state)
   renderSignalPanel();
   renderPortfolio();
+  autoSaveToLocalStorage();
 
   // Now kick off a live price fetch with full retry cycle for this symbol
   // This runs in the background — UI updates automatically when it completes
@@ -1740,6 +1762,7 @@ function saveEdit() {
   closeModal();
   renderSignalPanel();
   renderPortfolio();
+  autoSaveToLocalStorage();
 }
 document.getElementById('edit-modal').addEventListener('click', function(e){ if(e.target===this) closeModal(); });
 
@@ -2056,6 +2079,7 @@ async function reanalyzeAll() {
     ? `✓ Reanalysis complete — all ${successCount} ticker${successCount!==1?'s':''} updated from live candle data`
     : `⚠ Reanalysis done — ${successCount} updated, ${errorCount} failed`;
   showBanner(msg, successCount > 0 ? 'buy' : 'sell');
+  if (successCount > 0) autoSaveToLocalStorage();
 }
 
 // ═══════════════════════════════════════════════
@@ -2172,6 +2196,88 @@ function clearApiKey() {
 
 document.getElementById('apikey-modal').addEventListener('click', function(e){ if(e.target===this) closeApiKeyModal(); });
 document.getElementById('apikey-input').addEventListener('keydown', function(e){ if(e.key==='Enter') saveApiKey(); });
+
+// ═══════════════════════════════════════════════
+// AUTO-SAVE / AUTO-LOAD  (localStorage)
+// ═══════════════════════════════════════════════
+const LS_KEY = 'swingtrader_autosave';
+
+function buildSessionPayload() {
+  const syms = portfolioSymbols();
+  const snap = { stocks:{}, config:{}, prices:{}, rsi:{} };
+  for (const sym of syms) {
+    if (STOCKS[sym]) snap.stocks[sym]=STOCKS[sym];
+    if (CONFIG[sym]) snap.config[sym]=CONFIG[sym];
+    if (prices[sym]!==undefined) snap.prices[sym]=prices[sym];
+    if (rsiValues[sym]!==undefined) snap.rsi[sym]=rsiValues[sym];
+  }
+  return {
+    version: 10,
+    savedAt: new Date().toISOString(),
+    polygonKey: POLYGON_KEY || '',
+    holdings, tradeHistory,
+    filename: document.getElementById('filename-input')?.value || 'SwingTrader',
+    ...snap
+  };
+}
+
+function autoSaveToLocalStorage() {
+  try {
+    const payload = buildSessionPayload();
+    localStorage.setItem(LS_KEY, JSON.stringify(payload));
+    updateAutoSaveIndicator(payload.savedAt);
+  } catch(e) { /* localStorage full or unavailable — fail silently */ }
+}
+
+function updateAutoSaveIndicator(isoTime) {
+  const el = document.getElementById('autosave-indicator');
+  if (!el) return;
+  if (!isoTime) { el.textContent = ''; return; }
+  const t = new Date(isoTime);
+  el.textContent = '↺ ' + t.toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'});
+}
+
+function applySessionData(data) {
+  if (!data.holdings || !data.stocks || !data.config) throw new Error('Invalid session data');
+  holdings = data.holdings;
+  tradeHistory = data.tradeHistory || [];
+  fetchFailed.clear();
+  priceStale.clear();
+  priceConfirmed.clear();
+  if (data.polygonKey && data.polygonKey.trim()) {
+    POLYGON_KEY = data.polygonKey.trim();
+    updateApiKeyButton();
+  }
+  for (const s in data.stocks) STOCKS[s] = data.stocks[s];
+  for (const s in data.config) CONFIG[s] = data.config[s];
+  for (const s in data.prices) prices[s]  = data.prices[s];
+  for (const s in data.rsi)    rsiValues[s] = data.rsi[s];
+  if (data.filename) {
+    const fi = document.getElementById('filename-input');
+    if (fi) fi.value = data.filename;
+  }
+}
+
+function autoLoadFromLocalStorage() {
+  try {
+    const raw = localStorage.getItem(LS_KEY);
+    if (!raw) return false;
+    const data = JSON.parse(raw);
+    applySessionData(data);
+    updateAutoSaveIndicator(data.savedAt);
+    const at = data.savedAt
+      ? ' (auto-saved ' + new Date(data.savedAt).toLocaleString() + ')'
+      : '';
+    showBanner(`↺ Session restored${at} — ${holdings.length} holding(s)`, 'buy');
+    return true;
+  } catch(e) {
+    return false;
+  }
+}
+
+// ═══════════════════════════════════════════════
+// SAVE / LOAD  (file-based)
+// ═══════════════════════════════════════════════
 function saveSession() {
   const syms = portfolioSymbols();
   const snap = { stocks:{}, config:{}, prices:{}, rsi:{} };
@@ -2186,12 +2292,15 @@ function saveSession() {
     savedAt: new Date().toISOString(),
     polygonKey: POLYGON_KEY || '',
     holdings, tradeHistory,
+    filename: document.getElementById('filename-input').value.trim() || 'SwingTrader',
     ...snap
   };
-  const name = (document.getElementById('filename-input').value.trim()||'SwingTrader').replace(/[^a-zA-Z0-9_-]/g,'_');
+  const name = (payload.filename).replace(/[^a-zA-Z0-9_-]/g,'_');
   const blob = new Blob([JSON.stringify(payload,null,2)],{type:'application/json'});
   const a = document.createElement('a');
   a.href=URL.createObjectURL(blob); a.download=name+'.json'; a.click(); URL.revokeObjectURL(a.href);
+  // Also persist to localStorage so it's available on next startup
+  try { localStorage.setItem(LS_KEY, JSON.stringify(payload)); updateAutoSaveIndicator(payload.savedAt); } catch(e){}
   showBanner(`✓ Saved ${name}.json — ${holdings.length} holding(s), ${tradeHistory.length} history record(s)`,'buy');
 }
 
@@ -2201,36 +2310,23 @@ function loadSession(ev) {
   reader.onload=(e)=>{
     try {
       const data=JSON.parse(e.target.result);
-      if (!data.holdings||!data.stocks||!data.config) throw new Error('Invalid file format');
-      holdings=data.holdings; tradeHistory=data.tradeHistory||[];
-      fetchFailed.clear();
-      priceStale.clear();
-      priceConfirmed.clear();
-      // Restore API key if present in save file
-      if (data.polygonKey && data.polygonKey.trim()) {
-        POLYGON_KEY = data.polygonKey.trim();
-        updateApiKeyButton();
-      }
-      for(const s in data.stocks) STOCKS[s]=data.stocks[s];
-      for(const s in data.config) CONFIG[s]=data.config[s];
-      for(const s in data.prices) prices[s]=data.prices[s];
-      for(const s in data.rsi)    rsiValues[s]=data.rsi[s];
-      document.getElementById('filename-input').value=file.name.replace(/\.json$/i,'');
+      applySessionData(data); // shared restore logic
       renderSignalPanel(); renderPortfolio();
       if(historyOpen) renderHistory();
       if(acctPanelOpen) renderAccountPanel();
       if(tickTimer) clearTimeout(tickTimer);
+      // Persist loaded file to localStorage so it auto-loads next startup
+      try { localStorage.setItem(LS_KEY, JSON.stringify(data)); updateAutoSaveIndicator(data.savedAt); } catch(ex){}
 
       const at=data.savedAt?' (saved '+new Date(data.savedAt).toLocaleString()+')':'';
 
       // If no API key is set, prompt the user before reanalyzing
       if (!POLYGON_KEY || !POLYGON_KEY.trim()) {
         showBanner(`✓ Loaded ${file.name}${at} — ${holdings.length} holding(s) · enter API key to fetch prices`,'buy');
-        openApiKeyModal(true); // true = reanalyze after key is saved
+        openApiKeyModal(true);
       } else {
         const keyNote = data.polygonKey ? ' · API key restored' : '';
         showBanner(`✓ Loaded ${file.name}${at} — ${holdings.length} holding(s)${keyNote} · validating key…`,'buy');
-        // Validate key with a quick AAPL probe, then reanalyze
         validateApiKey(() => reanalyzeAll());
       }
     } catch(err){alert('Load failed: '+err.message);}
