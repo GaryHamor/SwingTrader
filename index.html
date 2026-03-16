@@ -2214,14 +2214,17 @@ function autoLoadFromLocalStorage() {
     const raw = localStorage.getItem(LS_KEY);
     if (!raw) return false;
     const data = JSON.parse(raw);
+    if (!data || !data.holdings || !data.stocks || !data.config) return false;
     applySessionData(data);
     updateAutoSaveIndicator(data.savedAt);
     const at = data.savedAt
       ? ' (auto-saved ' + new Date(data.savedAt).toLocaleString() + ')'
       : '';
-    showBanner(`↺ Session restored${at} — ${holdings.length} holding(s)`, 'buy');
+    // Defer banner until after first render paint
+    setTimeout(() => showBanner(`↺ Session restored${at} — ${holdings.length} holding(s)`, 'buy'), 300);
     return true;
   } catch(e) {
+    console.warn('Auto-load failed:', e.message);
     return false;
   }
 }
