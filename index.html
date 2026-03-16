@@ -871,77 +871,28 @@ function changeInterval(val) {
   tick();
 }
 
-// ═══════════════════════════════════════════════
-// API KEY VALIDATION — quick AAPL probe
-// Called on startup and after LOAD to ensure the
-// key works before attempting any real fetches.
-// ═══════════════════════════════════════════════
-async function validateApiKey(thenCallback) {
-  if (!POLYGON_KEY || !POLYGON_KEY.trim()) {
-    // No key at all — prompt immediately
-    await promptForApiKeyDuringReanalyze('startup');
-    if (POLYGON_KEY && POLYGON_KEY.trim()) {
-      if (thenCallback) thenCallback();
-    }
-    return;
-  }
-
-  updateFetchStatus('🔑 validating API key…', 'var(--muted)');
-  try {
-    await fetchPrice('AAPL'); // quick probe — AAPL always has data
-    clearApiKeyInvalidState();
-    updateFetchStatus('✓ API key valid', 'var(--buy)');
-    if (thenCallback) thenCallback();
-  } catch(err) {
-    if (err.isAuthError) {
-      markApiKeyInvalid();
-      updateFetchStatus('✗ API key invalid', 'var(--sell)');
-      const newKey = await promptForApiKeyDuringReanalyze('validation');
-      if (newKey) {
-        // Retry validation once with the new key
-        try {
-          await fetchPrice('AAPL');
-          clearApiKeyInvalidState();
-          updateFetchStatus('✓ API key valid', 'var(--buy)');
-          if (thenCallback) thenCallback();
-        } catch(e2) {
-          markApiKeyInvalid();
-          updateFetchStatus('✗ API key still invalid — prices unavailable', 'var(--sell)');
-        }
-      } else {
-        updateFetchStatus('⚠ no API key — prices unavailable', 'var(--warn)');
-      }
-    } else {
-      // Network/other error — not a key problem, proceed anyway
-      updateFetchStatus('⚠ validation failed (network?) — continuing', 'var(--warn)');
-      if (thenCallback) thenCallback();
-    }
-  }
-}
-
 function startLoop() {
   populateIntervalSelect();
   setInterval(updateClock, 1000);
   updateClock();
 
-  // Auto-load last session from localStorage
+  // Auto-load last session from localStorage (restores API key too)
   const restored = autoLoadFromLocalStorage();
 
   if (restored) {
-    // Render immediately with restored data, then validate key + reanalyze
     renderSignalPanel();
     renderPortfolio();
     if (historyOpen) renderHistory();
     if (acctPanelOpen) renderAccountPanel();
-
-    if (!POLYGON_KEY || !POLYGON_KEY.trim()) {
-      openApiKeyModal(true); // prompt for key, then reanalyze
+    // Key comes from localStorage — go straight to reanalyze
+    if (POLYGON_KEY && POLYGON_KEY.trim()) {
+      reanalyzeAll();
     } else {
-      validateApiKey(() => reanalyzeAll());
+      openApiKeyModal(true); // no key found — prompt before reanalyzing
     }
   } else {
-    // No saved session — just validate key and start normal tick loop
-    validateApiKey(() => tick());
+    // No saved session — start normal tick loop
+    tick();
   }
 }
 
@@ -2326,8 +2277,8 @@ function loadSession(ev) {
         openApiKeyModal(true);
       } else {
         const keyNote = data.polygonKey ? ' · API key restored' : '';
-        showBanner(`✓ Loaded ${file.name}${at} — ${holdings.length} holding(s)${keyNote} · validating key…`,'buy');
-        validateApiKey(() => reanalyzeAll());
+        showBanner(`✓ Loaded ${file.name}${at} — ${holdings.length} holding(s)${keyNote} · reanalyzing…`,'buy');
+        reanalyzeAll();
       }
     } catch(err){alert('Load failed: '+err.message);}
   };
