@@ -1610,8 +1610,38 @@ async function addHolding() {
   document.getElementById('add-account').value  = '';
   document.getElementById('add-acquired').value = '';
   document.getElementById('add-plansell').value = '';
+
+  // Render immediately so the holding appears (may briefly show stale/err state)
   renderSignalPanel();
   renderPortfolio();
+
+  // Now kick off a live price fetch with full retry cycle for this symbol
+  // This runs in the background — UI updates automatically when it completes
+  fetchPriceWithRetry(sym, 5, 1000).then(({ price, prevClose }) => {
+    prices[sym] = price;
+    fetchFailed.delete(sym);
+    priceStale.delete(sym);
+    priceConfirmed.add(sym);
+    if (STOCKS[sym]) STOCKS[sym].open = prevClose;
+    if (rsiValues[sym] !== undefined) {
+      const pchg = (price - prevClose) / prevClose;
+      rsiValues[sym] = Math.max(10, Math.min(90,
+        rsiValues[sym] * 0.9 + (50 + (pchg * 80)) * 0.1
+      ));
+    }
+    renderSignalPanel();
+    renderPortfolio();
+    if (acctPanelOpen) renderAccountPanel();
+    updateFetchStatus(`✓ live  ${portfolioSymbols().map(s => s + ' $' + (prices[s]?.toFixed(2) ?? '—')).join(' · ')}`, 'var(--buy)');
+  }).catch(() => {
+    // All retries failed — mark as fetch-failed (shows FETCH ERR, not stale,
+    // since we've never had a confirmed live price for this symbol)
+    fetchFailed.add(sym);
+    priceStale.delete(sym);
+    renderSignalPanel();
+    renderPortfolio();
+    updateFetchStatus(`⚠ could not fetch live price for ${sym} after 5 retries`, 'var(--warn)');
+  });
 }
 
 function openEdit(i) {
