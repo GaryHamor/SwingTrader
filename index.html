@@ -112,7 +112,8 @@
   .hist-stat{background:var(--surface2);border-radius:8px;padding:12px 14px;}
   .hist-stat-label{font-size:10px;font-family:var(--mono);color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:4px;}
   .hist-stat-val{font-family:var(--mono);font-size:18px;font-weight:700;}
-  .history-table{width:100%;border-collapse:collapse;font-size:12px;}
+  .history-table-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch;}
+  .history-table{width:100%;border-collapse:collapse;font-size:12px;min-width:860px;}
   .history-table th{font-family:var(--mono);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);text-align:left;padding:0 10px 10px 0;border-bottom:1px solid var(--border2);font-weight:400;}
   .history-table td{padding:10px 10px 10px 0;border-bottom:1px solid var(--border);font-family:var(--mono);font-size:12px;vertical-align:middle;}
   .history-table tr:last-child td{border-bottom:none;}
@@ -578,6 +579,7 @@
       <span id="reanalyze-status-msg" style="font-family:var(--mono);font-size:10px;color:var(--muted);"></span>
       <div style="display:flex;gap:8px;">
         <button class="btn-io" id="reanalyze-pause-btn" onclick="toggleReanalyzePause()" style="border-color:rgba(255,183,0,.4);color:var(--warn);">&#9646;&#9646; PAUSE</button>
+        <button class="btn-danger" id="reanalyze-cancel-btn" onclick="cancelReanalyze()" style="padding:5px 12px;font-size:11px;">&#10005; CANCEL</button>
         <button class="btn-cancel" id="reanalyze-close-btn" style="display:none;" onclick="closeReanalyzeOverlay();">Close</button>
       </div>
     </div>
@@ -676,6 +678,11 @@ async function polygonFetch(url) {
   if (res.status === 401 || res.status === 403) {
     const err = new Error(`HTTP ${res.status} — Invalid or unauthorized API key`);
     err.isAuthError = true;
+    throw err;
+  }
+  if (res.status === 429) {
+    const err = new Error('HTTP 429 — Rate limit exceeded');
+    err.isRateLimit = true;
     throw err;
   }
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -1218,6 +1225,7 @@ function renderHistory() {
         <div style="font-family:var(--mono);font-size:13px;margin-top:2px;"><span style="color:var(--sell);">$${worst.pnl.toFixed(2)}</span> <span style="color:var(--muted);font-size:10px;">${worst.symbol}</span></div>
       </div>
     </div>
+    <div class="history-table-wrap">
     <table class="history-table">
       <thead>
         <tr>
@@ -1229,7 +1237,8 @@ function renderHistory() {
         </tr>
       </thead>
       <tbody>${rows}</tbody>
-    </table>`;
+    </table>
+    </div>`;
 }
 
 function toggleHistory() {
@@ -1912,9 +1921,21 @@ function toggleReanalyzePause() {
   }
 }
 
+function cancelReanalyze() {
+  window._reanalyzeCancelled = true;
+  window._reanalyzePaused    = false; // unpause so the loop can see the cancel
+  const statusEl = document.getElementById('reanalyze-status-msg');
+  if (statusEl) statusEl.textContent = '✗ Cancelled';
+  const cancelBtn = document.getElementById('reanalyze-cancel-btn');
+  if (cancelBtn) cancelBtn.disabled = true;
+  const pauseBtn = document.getElementById('reanalyze-pause-btn');
+  if (pauseBtn) pauseBtn.style.display = 'none';
+}
+
 function closeReanalyzeOverlay() {
   document.getElementById('reanalyze-overlay').classList.remove('open');
-  window._reanalyzePaused = false;
+  window._reanalyzePaused    = false;
+  window._reanalyzeCancelled = false;
 }
 
 // Returns a Promise that resolves with the new key string when saved,
@@ -1960,6 +1981,19 @@ function promptForApiKeyDuringReanalyze(failedSym) {
   });
 }
 
+// Counts down visibly in the status element — used for rate-limit pauses
+// Returns true if cancelled mid-countdown
+async function countdownDelay(ms, fillEl, statusEl, label) {
+  const steps = Math.ceil(ms / 1000);
+  for (let i = steps; i > 0; i--) {
+    if (window._reanalyzeCancelled) return true;
+    statusEl.textContent = `${label} ${i}s…`;
+    statusEl.className = 'reanalyze-item-status running';
+    await sleep(1000);
+  }
+  return false;
+}
+
 async function reanalyzeAll() {
   const syms = portfolioSymbols();
   if (syms.length === 0) { showBanner('No holdings to reanalyze.', 'sell'); return; }
@@ -1976,9 +2010,11 @@ async function reanalyzeAll() {
     </div>`).join('');
 
   // Reset button states for this run
-  const closeBtnEl = document.getElementById('reanalyze-close-btn');
-  const pauseBtnEl = document.getElementById('reanalyze-pause-btn');
-  if (closeBtnEl) closeBtnEl.style.display = 'none';
+  const closeBtnEl  = document.getElementById('reanalyze-close-btn');
+  const pauseBtnEl  = document.getElementById('reanalyze-pause-btn');
+  const cancelBtnEl = document.getElementById('reanalyze-cancel-btn');
+  if (closeBtnEl)  closeBtnEl.style.display  = 'none';
+  if (cancelBtnEl) { cancelBtnEl.style.display = 'inline-block'; cancelBtnEl.disabled = false; }
   if (pauseBtnEl) {
     pauseBtnEl.style.display = 'inline-block';
     pauseBtnEl.innerHTML = '&#9646;&#9646; PAUSE';
@@ -1987,15 +2023,29 @@ async function reanalyzeAll() {
   }
   const statusMsgEl = document.getElementById('reanalyze-status-msg');
   if (statusMsgEl) statusMsgEl.textContent = '';
-  window._reanalyzePaused = false;
+  window._reanalyzePaused    = false;
+  window._reanalyzeCancelled = false;
   document.getElementById('reanalyze-overlay').classList.add('open');
 
   let successCount = 0, errorCount = 0;
 
   for (let si = 0; si < syms.length; si++) {
+    // Check cancel before starting each ticker
+    if (window._reanalyzeCancelled) break;
+
     const sym     = syms[si];
     const fillEl   = document.getElementById(`rfill-${sym}`);
     const statusEl = document.getElementById(`rstatus-${sym}`);
+
+    // Rate-limit pause between tickers (free tier = 5 req/min → 13s between calls)
+    if (si > 0) {
+      fillEl.className  = 'reanalyze-item-fill running';
+      fillEl.style.width = '20%';
+      const wasCancelled = await countdownDelay(13000, fillEl, statusEl, '⏳ rate limit —');
+      if (wasCancelled) break;
+    }
+
+    if (window._reanalyzeCancelled) break;
 
     fillEl.className  = 'reanalyze-item-fill running';
     fillEl.style.width = '60%';
@@ -2003,9 +2053,11 @@ async function reanalyzeAll() {
     statusEl.className = 'reanalyze-item-status running';
 
     let attempts = 0;
-    const maxKeyPrompts = 2; // allow user up to 2 key re-entries per run
+    const maxKeyPrompts = 2;
 
     while (attempts <= maxKeyPrompts) {
+      if (window._reanalyzeCancelled) break;
+
       try {
         const a = await analyzeTicker(sym);
 
@@ -2022,20 +2074,24 @@ async function reanalyzeAll() {
         statusEl.textContent = `✓ RSI ${a.rsiBase} · ${a.support.length} sup · ${a.resist.length} res`;
         statusEl.className = 'reanalyze-item-status done';
         successCount++;
-        break; // success — move to next ticker
+        break;
 
       } catch(err) {
-        if (err.isAuthError && attempts < maxKeyPrompts) {
-          // Auth failure — pause loop, mark button red, prompt user for new key
+        if (err.isRateLimit) {
+          fillEl.className  = 'reanalyze-item-fill running';
+          fillEl.style.width = '40%';
+          const wasCancelled = await countdownDelay(60000, fillEl, statusEl, '⏳ rate limited —');
+          if (wasCancelled) break;
+          continue;
+
+        } else if (err.isAuthError && attempts < maxKeyPrompts) {
           markApiKeyInvalid();
           fillEl.className  = 'reanalyze-item-fill error';
           statusEl.textContent = '⚠ invalid key — waiting…';
           statusEl.className = 'reanalyze-item-status error';
 
-          // Wait for the user to enter a new key (or cancel)
           const newKey = await promptForApiKeyDuringReanalyze(sym);
           if (!newKey) {
-            // User cancelled — mark remaining tickers as skipped and bail out
             for (let j = si; j < syms.length; j++) {
               const sf = document.getElementById(`rfill-${syms[j]}`);
               const ss = document.getElementById(`rstatus-${syms[j]}`);
@@ -2043,11 +2099,10 @@ async function reanalyzeAll() {
               if (ss) { ss.textContent = '— skipped'; ss.className = 'reanalyze-item-status error'; }
               errorCount++;
             }
-            si = syms.length; // exit outer loop
+            si = syms.length;
             break;
           }
 
-          // New key entered — reset status and retry this ticker
           fillEl.className  = 'reanalyze-item-fill running';
           fillEl.style.width = '60%';
           statusEl.textContent = 'retrying with new key…';
@@ -2055,7 +2110,6 @@ async function reanalyzeAll() {
           attempts++;
 
         } else {
-          // Non-auth error or max prompts reached
           fillEl.className  = 'reanalyze-item-fill error';
           statusEl.textContent = `✗ ${err.message.slice(0,28)}`;
           statusEl.className = 'reanalyze-item-status error';
@@ -2064,6 +2118,17 @@ async function reanalyzeAll() {
           break;
         }
       }
+    }
+
+    // Mark any remaining tickers as skipped if cancelled mid-loop
+    if (window._reanalyzeCancelled) {
+      for (let j = si + 1; j < syms.length; j++) {
+        const sf = document.getElementById(`rfill-${syms[j]}`);
+        const ss = document.getElementById(`rstatus-${syms[j]}`);
+        if (sf) { sf.className = 'reanalyze-item-fill error'; sf.style.width = '100%'; }
+        if (ss) { ss.textContent = '— cancelled'; ss.className = 'reanalyze-item-status error'; }
+      }
+      break;
     }
   }
 
@@ -2074,23 +2139,30 @@ async function reanalyzeAll() {
   btn.disabled = false;
   if (successCount > 0) clearApiKeyInvalidState();
 
-  const msg = successCount === syms.length
-    ? `✓ Reanalysis complete — all ${successCount} ticker${successCount!==1?'s':''} updated from live candle data`
-    : `⚠ Reanalysis done — ${successCount} updated, ${errorCount} failed`;
+  // Hide PAUSE and CANCEL buttons now that we're done
+  const pauseBtn2  = document.getElementById('reanalyze-pause-btn');
+  const cancelBtn2 = document.getElementById('reanalyze-cancel-btn');
+  if (pauseBtn2)  pauseBtn2.style.display  = 'none';
+  if (cancelBtn2) cancelBtn2.style.display = 'none';
 
-  // Update status message inside overlay
-  const statusMsg = document.getElementById('reanalyze-status-msg');
-  if (statusMsg) statusMsg.textContent = successCount === syms.length ? '✓ Complete' : `${successCount} updated · ${errorCount} failed`;
+  const wasCancelled = window._reanalyzeCancelled;
+  let msg;
+  if (wasCancelled) {
+    msg = successCount > 0
+      ? `⏹ Cancelled — ${successCount} ticker${successCount!==1?'s':''} updated before cancel`
+      : '⏹ Reanalysis cancelled';
+  } else {
+    msg = successCount === syms.length
+      ? `✓ Reanalysis complete — all ${successCount} ticker${successCount!==1?'s':''} updated from live candle data`
+      : `⚠ Reanalysis done — ${successCount} updated, ${errorCount} failed`;
+  }
 
-  // Hide PAUSE button now that we're done
-  const pauseBtn = document.getElementById('reanalyze-pause-btn');
-  if (pauseBtn) pauseBtn.style.display = 'none';
+  const statusMsg2 = document.getElementById('reanalyze-status-msg');
+  if (statusMsg2) statusMsg2.textContent = wasCancelled ? '⏹ Cancelled' : (successCount === syms.length ? '✓ Complete' : `${successCount} updated · ${errorCount} failed`);
 
-  if (window._reanalyzePaused) {
-    // User paused — show CLOSE button, let them read at their leisure
+  if (window._reanalyzePaused || wasCancelled) {
     document.getElementById('reanalyze-close-btn').style.display = 'inline-block';
   } else {
-    // Auto-close after a brief moment so the user sees the completed bars
     setTimeout(() => {
       document.getElementById('reanalyze-overlay').classList.remove('open');
     }, 1200);
