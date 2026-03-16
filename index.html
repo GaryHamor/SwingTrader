@@ -835,6 +835,26 @@ function isPriceStale(sym) {
   return priceStale.has(sym) && priceConfirmed.has(sym);
 }
 
+// Called when user taps the NO DATA button — fetches all tickers in one snapshot call
+async function retryAllPrices() {
+  updateFetchStatus('↺ retrying all prices…', 'var(--warn)');
+  try {
+    const ok = await fetchAllPrices();
+    renderSignalPanel();
+    renderPortfolio();
+    if (acctPanelOpen) renderAccountPanel();
+    if (ok) {
+      const syms = portfolioSymbols();
+      const summary = syms.map(s => `${s} $${prices[s]?.toFixed(2) ?? '—'}`).join(' · ');
+      updateFetchStatus(`✓ live  ${summary}`, 'var(--buy)');
+    } else {
+      updateFetchStatus('⚠ fetch failed — tap NO DATA to retry', 'var(--warn)');
+    }
+  } catch(e) {
+    updateFetchStatus(`⚠ ${e.message.slice(0, 40)}`, 'var(--warn)');
+  }
+}
+
 
 // ═══════════════════════════════════════════════
 // LOOP CONTROL
@@ -1016,7 +1036,9 @@ function renderSignalPanel() {
         <div class="price-block">
           <div class="price-val" style="color:var(--warn)">FETCH ERR</div>
           <div class="price-chg" style="color:var(--muted)">price unavailable</div>
-          <div class="indicators-row"><span class="ind-chip amber">⚠ NO DATA</span></div>
+          <div class="indicators-row">
+            <button class="ind-chip amber" onclick="retryAllPrices()" title="Tap to retry fetching all prices" style="cursor:pointer;border:none;">⚠ NO DATA — tap to retry</button>
+          </div>
         </div>
         <div class="meters-block">
           <div class="meter-row">
