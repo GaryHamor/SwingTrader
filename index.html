@@ -147,6 +147,9 @@
   .btn-io.apikey-btn:hover{border-color:var(--accent);color:var(--accent);background:rgba(91,140,255,.07);}
   .btn-io.apikey-btn.key-set{border-color:rgba(0,229,160,.4);color:var(--buy);}
   .btn-io.apikey-btn.key-set:hover{border-color:var(--buy);color:var(--buy);background:rgba(0,229,160,.07);}
+  .btn-io.apikey-btn.key-invalid{border-color:rgba(255,77,109,.6);color:var(--sell);animation:flashInvalid 1s ease 3;}
+  .btn-io.apikey-btn.key-invalid:hover{border-color:var(--sell);color:var(--sell);background:rgba(255,77,109,.07);}
+  @keyframes flashInvalid{0%,100%{opacity:1;}50%{opacity:.4;}}
 
   .reanalyze-overlay{position:fixed;inset:0;background:rgba(0,0,0,.8);z-index:300;display:none;align-items:center;justify-content:center;}
   .reanalyze-overlay.open{display:flex;}
@@ -416,7 +419,7 @@
 <div class="modal-overlay" id="apikey-modal">
   <div class="modal">
     <div class="modal-title">&#9881; Polygon.io API Key</div>
-    <div class="modal-sub">Enter your free Polygon.io API key to enable live price fetching. Get one free at <strong style="color:var(--accent);">polygon.io</strong>. Your key is saved with your session file.</div>
+    <div class="modal-sub" id="apikey-modal-sub">Enter your free Polygon.io API key to enable live price fetching. Get one free at <strong style="color:var(--accent);">polygon.io</strong>. Your key is saved with your session file.</div>
     <div class="modal-fields">
       <div>
         <div class="field-label">API Key</div>
@@ -665,9 +668,21 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 async function polygonFetch(url) {
   const res = await fetch(url, { cache: 'no-store' });
+  if (res.status === 401 || res.status === 403) {
+    const err = new Error(`HTTP ${res.status} — Invalid or unauthorized API key`);
+    err.isAuthError = true;
+    throw err;
+  }
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const data = await res.json();
-  if (data.status === 'ERROR') throw new Error(data.error || 'Polygon error');
+  if (data.status === 'ERROR') {
+    const msg = data.error || 'Polygon error';
+    const err = new Error(msg);
+    if (msg.toLowerCase().includes('auth') || msg.toLowerCase().includes('forbidden') || msg.toLowerCase().includes('key')) {
+      err.isAuthError = true;
+    }
+    throw err;
+  }
   return data;
 }
 
@@ -1859,7 +1874,7 @@ async function reanalyzeAll() {
   document.getElementById('reanalyze-close-btn').style.display = 'none';
   document.getElementById('reanalyze-overlay').classList.add('open');
 
-  let successCount = 0, errorCount = 0;
+  let successCount = 0, errorCount = 0, authErrorCount = 0;
 
   for (const sym of syms) {
     const fillEl   = document.getElementById(`rfill-${sym}`);
@@ -1895,6 +1910,7 @@ async function reanalyzeAll() {
       statusEl.textContent = `✗ ${err.message.slice(0,28)}`;
       statusEl.className = 'reanalyze-item-status error';
       errorCount++;
+      if (err.isAuthError) authErrorCount++;
     }
   }
 
@@ -1905,20 +1921,43 @@ async function reanalyzeAll() {
   document.getElementById('reanalyze-close-btn').style.display = 'inline-block';
   btn.disabled = false;
 
-  const msg = successCount === syms.length
-    ? `✓ Reanalysis complete — all ${successCount} ticker${successCount!==1?'s':''} updated from live candle data`
-    : `⚠ Reanalysis done — ${successCount} updated, ${errorCount} failed`;
-  showBanner(msg, successCount > 0 ? 'buy' : 'sell');
+  // If ALL tickers failed and at least one was an auth error → invalid key
+  const totalFailed = successCount === 0 && errorCount === syms.length;
+  if (totalFailed && authErrorCount > 0) {
+    markApiKeyInvalid();
+    showBanner('✗ API key rejected by Polygon.io — please update your key', 'sell');
+  } else {
+    // Clear invalid state if at least one succeeded
+    if (successCount > 0) clearApiKeyInvalidState();
+    const msg = successCount === syms.length
+      ? `✓ Reanalysis complete — all ${successCount} ticker${successCount!==1?'s':''} updated from live candle data`
+      : `⚠ Reanalysis done — ${successCount} updated, ${errorCount} failed`;
+    showBanner(msg, successCount > 0 ? 'buy' : 'sell');
+  }
 }
 
 // ═══════════════════════════════════════════════
 // API KEY MODAL
 // ═══════════════════════════════════════════════
-function openApiKeyModal() {
+let _reanalyzeAfterKeySet = false;
+
+function openApiKeyModal(reanalyzeAfter = false) {
+  _reanalyzeAfterKeySet = reanalyzeAfter;
   const inp = document.getElementById('apikey-input');
   inp.value = POLYGON_KEY || '';
   inp.type  = 'password';
   document.getElementById('apikey-toggle-vis').textContent = '👁';
+
+  // Context-aware subtitle
+  const subEl = document.getElementById('apikey-modal-sub');
+  if (subEl) {
+    if (reanalyzeAfter) {
+      subEl.innerHTML = '<span style="color:var(--warn);">⚠ No API key found.</span> A Polygon.io key is required to fetch live prices. Enter your key below and prices will update immediately. Get a free key at <strong style="color:var(--accent);">polygon.io</strong>.';
+    } else {
+      subEl.innerHTML = 'Enter your free Polygon.io API key to enable live price fetching. Get one free at <strong style="color:var(--accent);">polygon.io</strong>. Your key is saved with your session file.';
+    }
+  }
+
   updateApiKeyStatus();
   document.getElementById('apikey-clear-btn').style.display = POLYGON_KEY ? 'inline-block' : 'none';
   document.getElementById('apikey-modal').classList.add('open');
@@ -1926,6 +1965,7 @@ function openApiKeyModal() {
 }
 
 function closeApiKeyModal() {
+  _reanalyzeAfterKeySet = false;
   document.getElementById('apikey-modal').classList.remove('open');
 }
 
@@ -1962,18 +2002,37 @@ function updateApiKeyButton() {
   }
 }
 
+function markApiKeyInvalid() {
+  const btn = document.getElementById('apikey-btn');
+  if (!btn) return;
+  btn.className = 'btn-io apikey-btn key-invalid';
+  btn.title     = '✗ API key invalid or rejected — click to update';
+  btn.innerHTML = '&#9881; API KEY ✗';
+}
+
+function clearApiKeyInvalidState() {
+  // Only clears the invalid state — reverts to normal key-set appearance
+  updateApiKeyButton();
+}
+
 function saveApiKey() {
   const val = document.getElementById('apikey-input').value.trim();
   if (!val) { alert('Please enter an API key.'); return; }
   POLYGON_KEY = val;
-  updateApiKeyButton();
+  updateApiKeyButton(); // clears invalid state, sets to key-set green
   updateApiKeyStatus();
   document.getElementById('apikey-clear-btn').style.display = 'inline-block';
+  const shouldReanalyze = _reanalyzeAfterKeySet;
   closeApiKeyModal();
-  showBanner('✓ Polygon.io API key saved — price fetching enabled', 'buy');
-  // Kick off a fresh fetch with the new key
-  if (tickTimer) clearTimeout(tickTimer);
-  tick();
+  if (shouldReanalyze) {
+    showBanner('✓ API key saved — fetching live prices now…', 'buy');
+    reanalyzeAll();
+  } else {
+    showBanner('✓ Polygon.io API key saved — price fetching enabled', 'buy');
+    // Kick off a fresh fetch with the new key
+    if (tickTimer) clearTimeout(tickTimer);
+    tick();
+  }
 }
 
 function clearApiKey() {
@@ -2035,12 +2094,19 @@ function loadSession(ev) {
       renderSignalPanel(); renderPortfolio();
       if(historyOpen) renderHistory();
       if(acctPanelOpen) renderAccountPanel();
-      const at=data.savedAt?' (saved '+new Date(data.savedAt).toLocaleString()+')':'';
-      const keyNote = data.polygonKey ? ' · API key restored' : '';
-      showBanner(`✓ Loaded ${file.name}${at} — ${holdings.length} holding(s), ${tradeHistory.length} history record(s)${keyNote} · reanalyzing…`,'buy');
       if(tickTimer) clearTimeout(tickTimer);
-      // Force a full reanalyze on load so live prices and indicators are immediately fresh
-      reanalyzeAll();
+
+      const at=data.savedAt?' (saved '+new Date(data.savedAt).toLocaleString()+')':'';
+
+      // If no API key is set, prompt the user before reanalyzing
+      if (!POLYGON_KEY || !POLYGON_KEY.trim()) {
+        showBanner(`✓ Loaded ${file.name}${at} — ${holdings.length} holding(s) · enter API key to fetch prices`,'buy');
+        openApiKeyModal(true); // true = reanalyze after key is saved
+      } else {
+        const keyNote = data.polygonKey ? ' · API key restored' : '';
+        showBanner(`✓ Loaded ${file.name}${at} — ${holdings.length} holding(s)${keyNote} · reanalyzing…`,'buy');
+        reanalyzeAll();
+      }
     } catch(err){alert('Load failed: '+err.message);}
   };
   reader.readAsText(file); ev.target.value='';
