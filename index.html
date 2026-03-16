@@ -1961,12 +1961,18 @@ async function reanalyzeAll() {
       <span class="reanalyze-item-status" id="rstatus-${sym}">pending</span>
     </div>`).join('');
 
-  document.getElementById('reanalyze-close-btn').style.display = 'none';
-  document.getElementById('reanalyze-pause-btn').style.display = 'inline-block';
-  document.getElementById('reanalyze-pause-btn').innerHTML = '&#9646;&#9646; PAUSE';
-  document.getElementById('reanalyze-pause-btn').style.borderColor = 'rgba(255,183,0,.4)';
-  document.getElementById('reanalyze-pause-btn').style.color = 'var(--warn)';
-  document.getElementById('reanalyze-status-msg').textContent = '';
+  // Reset button states for this run
+  const closeBtnEl = document.getElementById('reanalyze-close-btn');
+  const pauseBtnEl = document.getElementById('reanalyze-pause-btn');
+  if (closeBtnEl) closeBtnEl.style.display = 'none';
+  if (pauseBtnEl) {
+    pauseBtnEl.style.display = 'inline-block';
+    pauseBtnEl.innerHTML = '&#9646;&#9646; PAUSE';
+    pauseBtnEl.style.borderColor = 'rgba(255,183,0,.4)';
+    pauseBtnEl.style.color = 'var(--warn)';
+  }
+  const statusMsgEl = document.getElementById('reanalyze-status-msg');
+  if (statusMsgEl) statusMsgEl.textContent = '';
   window._reanalyzePaused = false;
   document.getElementById('reanalyze-overlay').classList.add('open');
 
