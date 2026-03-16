@@ -574,8 +574,12 @@
     </div>
 
     <div class="reanalyze-progress" id="reanalyze-progress"></div>
-    <div style="margin-top:18px;text-align:right;">
-      <button class="btn-cancel" id="reanalyze-close-btn" style="display:none;" onclick="document.getElementById('reanalyze-overlay').classList.remove('open');">Close</button>
+    <div style="margin-top:18px;display:flex;align-items:center;justify-content:space-between;gap:10px;">
+      <span id="reanalyze-status-msg" style="font-family:var(--mono);font-size:10px;color:var(--muted);"></span>
+      <div style="display:flex;gap:8px;">
+        <button class="btn-io" id="reanalyze-pause-btn" onclick="toggleReanalyzePause()" style="border-color:rgba(255,183,0,.4);color:var(--warn);">&#9646;&#9646; PAUSE</button>
+        <button class="btn-cancel" id="reanalyze-close-btn" style="display:none;" onclick="closeReanalyzeOverlay();">Close</button>
+      </div>
     </div>
   </div>
 </div>
@@ -1879,6 +1883,26 @@ async function analyzeTicker(sym) {
   };
 }
 
+function toggleReanalyzePause() {
+  window._reanalyzePaused = !window._reanalyzePaused;
+  const btn = document.getElementById('reanalyze-pause-btn');
+  if (!btn) return;
+  if (window._reanalyzePaused) {
+    btn.innerHTML = '&#9654; RESUME';
+    btn.style.borderColor = 'rgba(0,229,160,.4)';
+    btn.style.color = 'var(--buy)';
+  } else {
+    btn.innerHTML = '&#9646;&#9646; PAUSE';
+    btn.style.borderColor = 'rgba(255,183,0,.4)';
+    btn.style.color = 'var(--warn)';
+  }
+}
+
+function closeReanalyzeOverlay() {
+  document.getElementById('reanalyze-overlay').classList.remove('open');
+  window._reanalyzePaused = false;
+}
+
 // Returns a Promise that resolves with the new key string when saved,
 // or resolves with null if the user cancels (closes modal without saving).
 // Used by reanalyzeAll to pause the loop on auth failure.
@@ -1938,6 +1962,12 @@ async function reanalyzeAll() {
     </div>`).join('');
 
   document.getElementById('reanalyze-close-btn').style.display = 'none';
+  document.getElementById('reanalyze-pause-btn').style.display = 'inline-block';
+  document.getElementById('reanalyze-pause-btn').innerHTML = '&#9646;&#9646; PAUSE';
+  document.getElementById('reanalyze-pause-btn').style.borderColor = 'rgba(255,183,0,.4)';
+  document.getElementById('reanalyze-pause-btn').style.color = 'var(--warn)';
+  document.getElementById('reanalyze-status-msg').textContent = '';
+  window._reanalyzePaused = false;
   document.getElementById('reanalyze-overlay').classList.add('open');
 
   let successCount = 0, errorCount = 0;
@@ -2021,14 +2051,31 @@ async function reanalyzeAll() {
   renderPortfolio();
   if (acctPanelOpen) renderAccountPanel();
 
-  document.getElementById('reanalyze-close-btn').style.display = 'inline-block';
   btn.disabled = false;
-
   if (successCount > 0) clearApiKeyInvalidState();
 
   const msg = successCount === syms.length
     ? `✓ Reanalysis complete — all ${successCount} ticker${successCount!==1?'s':''} updated from live candle data`
     : `⚠ Reanalysis done — ${successCount} updated, ${errorCount} failed`;
+
+  // Update status message inside overlay
+  const statusMsg = document.getElementById('reanalyze-status-msg');
+  if (statusMsg) statusMsg.textContent = successCount === syms.length ? '✓ Complete' : `${successCount} updated · ${errorCount} failed`;
+
+  // Hide PAUSE button now that we're done
+  const pauseBtn = document.getElementById('reanalyze-pause-btn');
+  if (pauseBtn) pauseBtn.style.display = 'none';
+
+  if (window._reanalyzePaused) {
+    // User paused — show CLOSE button, let them read at their leisure
+    document.getElementById('reanalyze-close-btn').style.display = 'inline-block';
+  } else {
+    // Auto-close after a brief moment so the user sees the completed bars
+    setTimeout(() => {
+      document.getElementById('reanalyze-overlay').classList.remove('open');
+    }, 1200);
+  }
+
   showBanner(msg, successCount > 0 ? 'buy' : 'sell');
   if (successCount > 0) autoSaveToLocalStorage();
 }
