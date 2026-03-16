@@ -1856,6 +1856,49 @@ async function analyzeTicker(sym) {
   };
 }
 
+// Returns a Promise that resolves with the new key string when saved,
+// or resolves with null if the user cancels (closes modal without saving).
+// Used by reanalyzeAll to pause the loop on auth failure.
+function promptForApiKeyDuringReanalyze(failedSym) {
+  return new Promise((resolve) => {
+    // Override the modal subtitle to explain the situation
+    const subEl = document.getElementById('apikey-modal-sub');
+    if (subEl) {
+      subEl.innerHTML = `<span style="color:var(--sell);font-weight:700;">✗ API key rejected</span> while fetching <strong>${failedSym}</strong>. Enter a valid Polygon.io key to continue. Remaining tickers will be skipped if you cancel.`;
+    }
+
+    const inp = document.getElementById('apikey-input');
+    inp.value = '';
+    inp.type  = 'password';
+    document.getElementById('apikey-toggle-vis').textContent = '👁';
+    document.getElementById('apikey-clear-btn').style.display = 'none';
+    document.getElementById('apikey-status').textContent = '';
+    document.getElementById('apikey-modal').classList.add('open');
+    setTimeout(() => inp.focus(), 100);
+
+    // Temporarily override save and cancel to resolve the promise
+    const origSave   = window._apiKeySaveOverride;
+    const origCancel = window._apiKeyCancelOverride;
+
+    window._apiKeySaveOverride = () => {
+      const val = inp.value.trim();
+      if (!val) { alert('Please enter an API key.'); return; }
+      POLYGON_KEY = val;
+      updateApiKeyButton();
+      document.getElementById('apikey-modal').classList.remove('open');
+      window._apiKeySaveOverride   = origSave;
+      window._apiKeyCancelOverride = origCancel;
+      resolve(val);
+    };
+    window._apiKeyCancelOverride = () => {
+      document.getElementById('apikey-modal').classList.remove('open');
+      window._apiKeySaveOverride   = origSave;
+      window._apiKeyCancelOverride = origCancel;
+      resolve(null);
+    };
+  });
+}
+
 async function reanalyzeAll() {
   const syms = portfolioSymbols();
   if (syms.length === 0) { showBanner('No holdings to reanalyze.', 'sell'); return; }
@@ -1874,9 +1917,10 @@ async function reanalyzeAll() {
   document.getElementById('reanalyze-close-btn').style.display = 'none';
   document.getElementById('reanalyze-overlay').classList.add('open');
 
-  let successCount = 0, errorCount = 0, authErrorCount = 0;
+  let successCount = 0, errorCount = 0;
 
-  for (const sym of syms) {
+  for (let si = 0; si < syms.length; si++) {
+    const sym     = syms[si];
     const fillEl   = document.getElementById(`rfill-${sym}`);
     const statusEl = document.getElementById(`rstatus-${sym}`);
 
@@ -1885,32 +1929,68 @@ async function reanalyzeAll() {
     statusEl.textContent = 'fetching candles…';
     statusEl.className = 'reanalyze-item-status running';
 
-    try {
-      const a = await analyzeTicker(sym);
+    let attempts = 0;
+    const maxKeyPrompts = 2; // allow user up to 2 key re-entries per run
 
-      CONFIG[sym] = { support: a.support, resist: a.resist, rsiBase: a.rsiBase, macdBias: a.macdBias, optionsBias: a.optionsBias };
+    while (attempts <= maxKeyPrompts) {
+      try {
+        const a = await analyzeTicker(sym);
 
-      // Blend RSI — don't hard-reset
-      rsiValues[sym] = rsiValues[sym] !== undefined
-        ? rsiValues[sym] * 0.4 + a.rsiBase * 0.6
-        : a.rsiBase;
+        CONFIG[sym] = { support: a.support, resist: a.resist, rsiBase: a.rsiBase, macdBias: a.macdBias, optionsBias: a.optionsBias };
+        rsiValues[sym] = rsiValues[sym] !== undefined
+          ? rsiValues[sym] * 0.4 + a.rsiBase * 0.6
+          : a.rsiBase;
+        prices[sym] = a.currentPrice;
+        if (STOCKS[sym]) { STOCKS[sym].open = a.openPrice; STOCKS[sym].name = a.name; }
+        priceConfirmed.add(sym);
+        fetchFailed.delete(sym);
 
-      // Update live price and open
-      prices[sym] = a.currentPrice;
-      if (STOCKS[sym]) { STOCKS[sym].open = a.openPrice; STOCKS[sym].name = a.name; }
-      priceConfirmed.add(sym);
-      fetchFailed.delete(sym);
+        fillEl.className  = 'reanalyze-item-fill done';
+        statusEl.textContent = `✓ RSI ${a.rsiBase} · ${a.support.length} sup · ${a.resist.length} res`;
+        statusEl.className = 'reanalyze-item-status done';
+        successCount++;
+        break; // success — move to next ticker
 
-      fillEl.className  = 'reanalyze-item-fill done';
-      statusEl.textContent = `✓ RSI ${a.rsiBase} · ${a.support.length} sup · ${a.resist.length} res`;
-      statusEl.className = 'reanalyze-item-status done';
-      successCount++;
-    } catch(err) {
-      fillEl.className  = 'reanalyze-item-fill error';
-      statusEl.textContent = `✗ ${err.message.slice(0,28)}`;
-      statusEl.className = 'reanalyze-item-status error';
-      errorCount++;
-      if (err.isAuthError) authErrorCount++;
+      } catch(err) {
+        if (err.isAuthError && attempts < maxKeyPrompts) {
+          // Auth failure — pause loop, mark button red, prompt user for new key
+          markApiKeyInvalid();
+          fillEl.className  = 'reanalyze-item-fill error';
+          statusEl.textContent = '⚠ invalid key — waiting…';
+          statusEl.className = 'reanalyze-item-status error';
+
+          // Wait for the user to enter a new key (or cancel)
+          const newKey = await promptForApiKeyDuringReanalyze(sym);
+          if (!newKey) {
+            // User cancelled — mark remaining tickers as skipped and bail out
+            for (let j = si; j < syms.length; j++) {
+              const sf = document.getElementById(`rfill-${syms[j]}`);
+              const ss = document.getElementById(`rstatus-${syms[j]}`);
+              if (sf) { sf.className = 'reanalyze-item-fill error'; sf.style.width = '100%'; }
+              if (ss) { ss.textContent = '— skipped'; ss.className = 'reanalyze-item-status error'; }
+              errorCount++;
+            }
+            si = syms.length; // exit outer loop
+            break;
+          }
+
+          // New key entered — reset status and retry this ticker
+          fillEl.className  = 'reanalyze-item-fill running';
+          fillEl.style.width = '60%';
+          statusEl.textContent = 'retrying with new key…';
+          statusEl.className = 'reanalyze-item-status running';
+          attempts++;
+
+        } else {
+          // Non-auth error or max prompts reached
+          fillEl.className  = 'reanalyze-item-fill error';
+          statusEl.textContent = `✗ ${err.message.slice(0,28)}`;
+          statusEl.className = 'reanalyze-item-status error';
+          if (err.isAuthError) markApiKeyInvalid();
+          errorCount++;
+          break;
+        }
+      }
     }
   }
 
@@ -1921,19 +2001,12 @@ async function reanalyzeAll() {
   document.getElementById('reanalyze-close-btn').style.display = 'inline-block';
   btn.disabled = false;
 
-  // If ALL tickers failed and at least one was an auth error → invalid key
-  const totalFailed = successCount === 0 && errorCount === syms.length;
-  if (totalFailed && authErrorCount > 0) {
-    markApiKeyInvalid();
-    showBanner('✗ API key rejected by Polygon.io — please update your key', 'sell');
-  } else {
-    // Clear invalid state if at least one succeeded
-    if (successCount > 0) clearApiKeyInvalidState();
-    const msg = successCount === syms.length
-      ? `✓ Reanalysis complete — all ${successCount} ticker${successCount!==1?'s':''} updated from live candle data`
-      : `⚠ Reanalysis done — ${successCount} updated, ${errorCount} failed`;
-    showBanner(msg, successCount > 0 ? 'buy' : 'sell');
-  }
+  if (successCount > 0) clearApiKeyInvalidState();
+
+  const msg = successCount === syms.length
+    ? `✓ Reanalysis complete — all ${successCount} ticker${successCount!==1?'s':''} updated from live candle data`
+    : `⚠ Reanalysis done — ${successCount} updated, ${errorCount} failed`;
+  showBanner(msg, successCount > 0 ? 'buy' : 'sell');
 }
 
 // ═══════════════════════════════════════════════
@@ -1965,6 +2038,8 @@ function openApiKeyModal(reanalyzeAfter = false) {
 }
 
 function closeApiKeyModal() {
+  // If an override cancel is active (called from within reanalyzeAll pause), use it
+  if (window._apiKeyCancelOverride) { window._apiKeyCancelOverride(); return; }
   _reanalyzeAfterKeySet = false;
   document.getElementById('apikey-modal').classList.remove('open');
 }
@@ -2011,15 +2086,17 @@ function markApiKeyInvalid() {
 }
 
 function clearApiKeyInvalidState() {
-  // Only clears the invalid state — reverts to normal key-set appearance
   updateApiKeyButton();
 }
 
 function saveApiKey() {
+  // If an override is active (called from within reanalyzeAll pause), use it
+  if (window._apiKeySaveOverride) { window._apiKeySaveOverride(); return; }
+
   const val = document.getElementById('apikey-input').value.trim();
   if (!val) { alert('Please enter an API key.'); return; }
   POLYGON_KEY = val;
-  updateApiKeyButton(); // clears invalid state, sets to key-set green
+  updateApiKeyButton();
   updateApiKeyStatus();
   document.getElementById('apikey-clear-btn').style.display = 'inline-block';
   const shouldReanalyze = _reanalyzeAfterKeySet;
@@ -2029,7 +2106,6 @@ function saveApiKey() {
     reanalyzeAll();
   } else {
     showBanner('✓ Polygon.io API key saved — price fetching enabled', 'buy');
-    // Kick off a fresh fetch with the new key
     if (tickTimer) clearTimeout(tickTimer);
     tick();
   }
