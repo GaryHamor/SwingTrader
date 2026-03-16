@@ -870,11 +870,60 @@ function changeInterval(val) {
   tick();
 }
 
+// ═══════════════════════════════════════════════
+// API KEY VALIDATION — quick AAPL probe
+// Called on startup and after LOAD to ensure the
+// key works before attempting any real fetches.
+// ═══════════════════════════════════════════════
+async function validateApiKey(thenCallback) {
+  if (!POLYGON_KEY || !POLYGON_KEY.trim()) {
+    // No key at all — prompt immediately
+    await promptForApiKeyDuringReanalyze('startup');
+    if (POLYGON_KEY && POLYGON_KEY.trim()) {
+      if (thenCallback) thenCallback();
+    }
+    return;
+  }
+
+  updateFetchStatus('🔑 validating API key…', 'var(--muted)');
+  try {
+    await fetchPrice('AAPL'); // quick probe — AAPL always has data
+    clearApiKeyInvalidState();
+    updateFetchStatus('✓ API key valid', 'var(--buy)');
+    if (thenCallback) thenCallback();
+  } catch(err) {
+    if (err.isAuthError) {
+      markApiKeyInvalid();
+      updateFetchStatus('✗ API key invalid', 'var(--sell)');
+      const newKey = await promptForApiKeyDuringReanalyze('validation');
+      if (newKey) {
+        // Retry validation once with the new key
+        try {
+          await fetchPrice('AAPL');
+          clearApiKeyInvalidState();
+          updateFetchStatus('✓ API key valid', 'var(--buy)');
+          if (thenCallback) thenCallback();
+        } catch(e2) {
+          markApiKeyInvalid();
+          updateFetchStatus('✗ API key still invalid — prices unavailable', 'var(--sell)');
+        }
+      } else {
+        updateFetchStatus('⚠ no API key — prices unavailable', 'var(--warn)');
+      }
+    } else {
+      // Network/other error — not a key problem, proceed anyway
+      updateFetchStatus('⚠ validation failed (network?) — continuing', 'var(--warn)');
+      if (thenCallback) thenCallback();
+    }
+  }
+}
+
 function startLoop() {
   populateIntervalSelect();
   setInterval(updateClock, 1000);
   updateClock();
-  tick(); // kick off immediately
+  // Validate API key first; if good, kick off the normal tick loop
+  validateApiKey(() => tick());
 }
 
 
@@ -2180,8 +2229,9 @@ function loadSession(ev) {
         openApiKeyModal(true); // true = reanalyze after key is saved
       } else {
         const keyNote = data.polygonKey ? ' · API key restored' : '';
-        showBanner(`✓ Loaded ${file.name}${at} — ${holdings.length} holding(s)${keyNote} · reanalyzing…`,'buy');
-        reanalyzeAll();
+        showBanner(`✓ Loaded ${file.name}${at} — ${holdings.length} holding(s)${keyNote} · validating key…`,'buy');
+        // Validate key with a quick AAPL probe, then reanalyze
+        validateApiKey(() => reanalyzeAll());
       }
     } catch(err){alert('Load failed: '+err.message);}
   };
