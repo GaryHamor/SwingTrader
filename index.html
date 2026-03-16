@@ -699,97 +699,122 @@ async function polygonFetch(url) {
   return data;
 }
 
-// Fetch prices for ALL portfolio symbols in a single Snapshot API call
+// Fetch prices for ALL portfolio symbols — tries Snapshot first (1 call),
+// falls back to per-ticker /v2/aggs/prev if Snapshot returns 403 (free tier restriction)
 async function fetchAllPrices() {
   const syms = portfolioSymbols();
   if (syms.length === 0) return false;
 
   const mktStatus = getMarketStatus();
 
-  // Polygon Snapshot — one call, all tickers
+  // ── Try Snapshot first (single call) ──
   const tickerList = syms.map(s => encodeURIComponent(s)).join(',');
   const snapshotUrl = `https://api.polygon.io/v2/snapshot/locale/us/markets/stocks/tickers?tickers=${tickerList}&apiKey=${POLYGON_KEY}`;
 
-  let snapshotData;
-  let lastErr;
-  for (let attempt = 0; attempt <= 5; attempt++) {
-    try {
-      snapshotData = await polygonFetch(snapshotUrl);
-      break;
-    } catch(e) {
-      lastErr = e;
-      if (e.isAuthError || e.isRateLimit) throw e; // don't retry auth/rate errors
-      if (attempt < 5) await sleep(1000);
-    }
-  }
-  if (!snapshotData) throw lastErr ?? new Error('Snapshot fetch failed');
-
-  // Build a lookup by ticker symbol
-  const snapMap = {};
-  for (const t of (snapshotData.tickers || [])) {
-    snapMap[t.ticker] = t;
+  let snapshotData = null;
+  try {
+    snapshotData = await polygonFetch(snapshotUrl);
+  } catch(e) {
+    if (e.isRateLimit) throw e;
+    // 403 on Snapshot = free-tier restriction, not invalid key — fall through to aggs
+    // Any other error — also fall through to aggs
+    snapshotData = null;
   }
 
-  let anyOk = false;
-
-  for (const sym of syms) {
-    const snap = snapMap[sym];
-    if (!snap) {
-      // Symbol not in snapshot response — mark failed
-      if (priceConfirmed.has(sym)) { priceStale.add(sym); fetchFailed.delete(sym); }
-      else { fetchFailed.add(sym); }
-      continue;
-    }
-
-    // Pick the best available price based on session
-    const day      = snap.day     || {};   // today's intraday data
-    const prevDay  = snap.prevDay || {};   // previous session close
-    const lastTrade = snap.lastTrade || {};
-
-    let price, prevClose;
-    prevClose = prevDay.c || prevDay.vw || 0;
-
-    if (mktStatus === 'open') {
-      // Use last trade price; fall back to day VWAP, then prev close
-      price = lastTrade.p || day.vw || day.c || prevClose;
-    } else if (mktStatus === 'premarket' || mktStatus === 'afterhours') {
-      // Use last trade (may be pre/AH print); fall back to today's close or prev close
-      price = lastTrade.p || day.c || prevClose;
-    } else {
-      // Closed — use previous session close
-      price = prevDay.c || prevDay.vw || lastTrade.p || 0;
-      if (!prevClose && price) prevClose = price;
-    }
-
-    // If we still have no price, fall back gracefully to last known — don't mark stale
-    if (!price || price <= 0) {
-      if (prices[sym] && prices[sym] > 0) {
-        // Keep last known price — do NOT mark stale just because snapshot had no intraday data
-        priceConfirmed.add(sym);
-        fetchFailed.delete(sym);
-        priceStale.delete(sym);
-        anyOk = true;
-        continue;
-      }
-      if (priceConfirmed.has(sym)) { priceStale.add(sym); fetchFailed.delete(sym); }
-      else { fetchFailed.add(sym); }
-      continue;
-    }
-
+  // Helper: apply a single ticker's price data to state
+  function applyPrice(sym, price, prevClose) {
+    if (!price || price <= 0) return false;
     prices[sym] = parseFloat(price.toFixed(4));
     if (prevClose > 0) STOCKS[sym].open = parseFloat(prevClose.toFixed(4));
     fetchFailed.delete(sym);
     priceStale.delete(sym);
     priceConfirmed.add(sym);
-
     if (rsiValues[sym] !== undefined && prevClose > 0) {
       const pchg = (prices[sym] - prevClose) / prevClose;
       rsiValues[sym] = Math.max(10, Math.min(90,
         rsiValues[sym] * 0.9 + (50 + pchg * 80) * 0.1
       ));
     }
-    anyOk = true;
+    return true;
   }
+
+  function markFailed(sym) {
+    if (prices[sym] && prices[sym] > 0 && priceConfirmed.has(sym)) {
+      // Keep last known — don't mark stale for missing intraday data
+      return;
+    }
+    if (priceConfirmed.has(sym)) { priceStale.add(sym); fetchFailed.delete(sym); }
+    else { fetchFailed.add(sym); }
+  }
+
+  let anyOk = false;
+
+  if (snapshotData) {
+    // ── Snapshot succeeded — parse it ──
+    const snapMap = {};
+    for (const t of (snapshotData.tickers || [])) snapMap[t.ticker] = t;
+
+    for (const sym of syms) {
+      const snap = snapMap[sym];
+      if (!snap) { markFailed(sym); continue; }
+
+      const day      = snap.day      || {};
+      const prevDay  = snap.prevDay  || {};
+      const lastTrade = snap.lastTrade || {};
+      let price, prevClose;
+      prevClose = prevDay.c || prevDay.vw || 0;
+
+      if (mktStatus === 'open') {
+        price = lastTrade.p || day.vw || day.c || prevClose;
+      } else if (mktStatus === 'premarket' || mktStatus === 'afterhours') {
+        price = lastTrade.p || day.c || prevClose;
+      } else {
+        price = prevDay.c || prevDay.vw || lastTrade.p || 0;
+        if (!prevClose && price) prevClose = price;
+      }
+
+      if (!price || price <= 0) {
+        if (prices[sym] && prices[sym] > 0 && priceConfirmed.has(sym)) {
+          priceConfirmed.add(sym); fetchFailed.delete(sym); priceStale.delete(sym); anyOk = true;
+        } else { markFailed(sym); }
+        continue;
+      }
+      if (applyPrice(sym, price, prevClose)) anyOk = true;
+    }
+
+  } else {
+    // ── Snapshot unavailable — fall back to /v2/aggs/prev per ticker ──
+    // These all fire in parallel — still just a few calls total
+    const aggResults = await Promise.allSettled(syms.map(async sym => {
+      const url = `https://api.polygon.io/v2/aggs/ticker/${encodeURIComponent(sym)}/prev?adjusted=true&apiKey=${POLYGON_KEY}`;
+      for (let attempt = 0; attempt <= 3; attempt++) {
+        try {
+          const data = await polygonFetch(url);
+          const r = data?.results?.[0];
+          if (!r) throw new Error('No agg data');
+          const price     = r.vw ?? r.c;
+          const prevClose = r.c;
+          return { sym, price, prevClose };
+        } catch(e) {
+          if (e.isAuthError) throw e;
+          if (attempt < 3) await sleep(1000);
+          else throw e;
+        }
+      }
+    }));
+
+    for (const result of aggResults) {
+      if (result.status === 'fulfilled' && result.value) {
+        const { sym, price, prevClose } = result.value;
+        if (applyPrice(sym, price, prevClose)) anyOk = true;
+      } else {
+        // find which sym failed
+        const idx = aggResults.indexOf(result);
+        markFailed(syms[idx]);
+      }
+    }
+  }
+
   return anyOk;
 }
 
@@ -962,11 +987,11 @@ function startLoop() {
     renderPortfolio();
     if (historyOpen) renderHistory();
     if (acctPanelOpen) renderAccountPanel();
-    // Key comes from localStorage — go straight to reanalyze
+    // Just do a quick price update — user can Reanalyze All manually if needed
     if (POLYGON_KEY && POLYGON_KEY.trim()) {
-      reanalyzeAll();
+      tick();
     } else {
-      openApiKeyModal(true); // no key found — prompt before reanalyzing
+      openApiKeyModal(false); // no key — prompt, but don't auto-reanalyze after
     }
   } else {
     // No saved session — start normal tick loop
@@ -2331,11 +2356,12 @@ function saveApiKey() {
   updateApiKeyButton();
   updateApiKeyStatus();
   document.getElementById('apikey-clear-btn').style.display = 'inline-block';
-  const shouldReanalyze = _reanalyzeAfterKeySet;
+  const shouldFetch = _reanalyzeAfterKeySet;
   closeApiKeyModal();
-  if (shouldReanalyze) {
+  if (shouldFetch) {
     showBanner('✓ API key saved — fetching live prices now…', 'buy');
-    reanalyzeAll();
+    if (tickTimer) clearTimeout(tickTimer);
+    tick();
   } else {
     showBanner('✓ Polygon.io API key saved — price fetching enabled', 'buy');
     if (tickTimer) clearTimeout(tickTimer);
@@ -2482,14 +2508,15 @@ function loadSession(ev) {
 
       const at=data.savedAt?' (saved '+new Date(data.savedAt).toLocaleString()+')':'';
 
-      // If no API key is set, prompt the user before reanalyzing
+      // If no API key is set, prompt the user before fetching prices
       if (!POLYGON_KEY || !POLYGON_KEY.trim()) {
         showBanner(`✓ Loaded ${file.name}${at} — ${holdings.length} holding(s) · enter API key to fetch prices`,'buy');
         openApiKeyModal(true);
       } else {
         const keyNote = data.polygonKey ? ' · API key restored' : '';
-        showBanner(`✓ Loaded ${file.name}${at} — ${holdings.length} holding(s)${keyNote} · reanalyzing…`,'buy');
-        reanalyzeAll();
+        showBanner(`✓ Loaded ${file.name}${at} — ${holdings.length} holding(s)${keyNote} · fetching prices…`,'buy');
+        if (tickTimer) clearTimeout(tickTimer);
+        tick();
       }
     } catch(err){alert('Load failed: '+err.message);}
   };
