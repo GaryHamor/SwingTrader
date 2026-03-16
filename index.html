@@ -32,7 +32,7 @@
   .panel-label{font-size:10px;font-family:var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin-bottom:12px;}
 
   .signal-panel{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:20px 24px;margin-bottom:20px;}
-  .stock-row{display:grid;grid-template-columns:100px 90px 1fr 90px;gap:14px;align-items:center;padding:14px 0;border-bottom:1px solid var(--border);}
+  .stock-row{display:grid;grid-template-columns:100px 90px 1fr;gap:14px;align-items:center;padding:14px 0;border-bottom:1px solid var(--border);}
   .stock-row:last-child{border-bottom:none;padding-bottom:0;}
   .stock-row:first-of-type{padding-top:0;}
   .ticker-symbol{font-family:var(--mono);font-size:16px;font-weight:700;letter-spacing:.04em;}
@@ -150,7 +150,7 @@
   @media(max-width:640px){
     .add-form{grid-template-columns:1fr 1fr;}
     .btn-add{grid-column:span 2;}
-    .stock-row{grid-template-columns:80px 70px 1fr 70px;gap:8px;}
+    .stock-row{grid-template-columns:80px 70px 1fr;gap:8px;}
     .history-summary{grid-template-columns:1fr 1fr;}
   }
 </style>
@@ -633,18 +633,6 @@ function renderSignalPanel() {
     const nearSup = CONFIG[sym].support.some(s=>{const d=(p-s)/s; return d>=0&&d<.02;});
     const nearRes = CONFIG[sym].resist.some (r=>{const d=(r-p)/r; return d>=0&&d<.02;});
 
-    // One row of action buttons per holding of this symbol
-    const holdIdx = holdings.reduce((acc,h,i)=>{if(h.symbol===sym)acc.push(i);return acc;},[]);
-    const btnRows = holdIdx.map(i => {
-      const h = holdings[i];
-      const hasSell = h.sellPrice && h.sellPrice > 0;
-      const soldLabel = hasSell ? `$${parseFloat(h.sellPrice).toFixed(2)}` : 'SOLD';
-      return `<div style="display:flex;gap:4px;margin-bottom:3px;">
-        <button class="btn-icon sold-btn ${hasSell?'has-price':''}" onclick="openSoldModal(${i})" title="${hasSell?'Update sell price':'Record sell price'}">${soldLabel}</button>
-        <button class="btn-icon del" onclick="openDeleteModal(${i})" title="Remove position">&#10005;</button>
-      </div>`;
-    }).join('');
-
     html += `
     <div class="stock-row update-flash">
       <div>
@@ -673,7 +661,6 @@ function renderSignalPanel() {
           <span class="meter-pct sell">${sig.sell}%</span>
         </div>
       </div>
-      <div class="row-actions">${btnRows}</div>
     </div>`;
   }
 
