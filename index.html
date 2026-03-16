@@ -1172,7 +1172,10 @@ function renderHistory() {
   const worst = tradeHistory.reduce((a,t)=>t.pnl<a.pnl?t:a, tradeHistory[0]);
   const avgPnl = (totalPnl / tradeHistory.length).toFixed(2);
 
-  const rows = [...tradeHistory].reverse().map(t => {
+  // Build rows in reverse display order but track original tradeHistory index for deletion
+  const rows = [...tradeHistory].map((t,i) => ({ t, origIdx: i }))
+    .reverse()
+    .map(({ t, origIdx }) => {
     const isWin = t.pnl >= 0;
     const s = t.pnl>=0?'+':'';
     return `<tr class="${isWin?'trade-win':'trade-loss'}">
@@ -1188,6 +1191,7 @@ function renderHistory() {
       <td class="${isWin?'pnl-pos':'pnl-neg'}">${s}${t.pnlPct.toFixed(2)}%</td>
       <td style="color:var(--muted);font-size:10px;">${fmtDate(t.acquired)}</td>
       <td style="color:var(--muted);font-size:10px;">${fmtDate(t.actualSellDate||t.soldAt?.slice(0,10))}</td>
+      <td><button class="btn-icon del" onclick="deleteHistoryEntry(${origIdx})" title="Remove this history entry">&#10005;</button></td>
     </tr>`;
   }).join('');
 
@@ -1221,7 +1225,7 @@ function renderHistory() {
           <th>Cost/Sh</th><th>Sell/Sh</th>
           <th>Total Cost</th><th>Proceeds</th>
           <th>P&amp;L $</th><th>P&amp;L %</th>
-          <th>Acquired</th><th>Sold</th>
+          <th>Acquired</th><th>Sold</th><th></th>
         </tr>
       </thead>
       <tbody>${rows}</tbody>
@@ -1237,6 +1241,16 @@ function toggleHistory() {
   btn.textContent = historyOpen ? '&#10006; CLOSE HISTORY' : '&#9670; HISTORY';
   btn.innerHTML   = historyOpen ? '&#10006; CLOSE HISTORY' : '&#9670; HISTORY';
   if (historyOpen) renderHistory();
+}
+
+function deleteHistoryEntry(idx) {
+  const t = tradeHistory[idx];
+  if (!t) return;
+  if (!confirm(`Remove ${t.symbol} trade (${t.qty} shares, sold $${t.sellPerShare.toFixed(2)}/sh) from history? This cannot be undone.`)) return;
+  tradeHistory.splice(idx, 1);
+  renderHistory();
+  autoSaveToLocalStorage();
+  showBanner(`◈ History entry removed — ${t.symbol} ${t.qty} shares`, 'sell');
 }
 
 // ═══════════════════════════════════════════════
